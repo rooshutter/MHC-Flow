@@ -122,6 +122,7 @@ def analyze_fold(samples: dict, fold_name: str) -> dict:
     
     # Best-of-10 statistics
     if xray_best:
+        print("X-ray structures:", xray_best)
         xray_tensor = torch.tensor(xray_best)
         results['xray_best_mean'] = xray_tensor.mean().item()
         results['xray_best_median'] = xray_tensor.median().item()
@@ -131,6 +132,7 @@ def analyze_fold(samples: dict, fold_name: str) -> dict:
         results['n_xray'] = len(xray_best)
     
     if pandora_best:
+
         pandora_tensor = torch.tensor(pandora_best)
         results['pandora_best_mean'] = pandora_tensor.mean().item()
         results['pandora_best_median'] = pandora_tensor.median().item()
@@ -141,6 +143,7 @@ def analyze_fold(samples: dict, fold_name: str) -> dict:
     
     # Average-of-10 statistics (docked average)
     if xray_avg:
+        print("X-ray average:", xray_avg)
         xray_docked, xray_div_counts = compute_docked_average(xray_avg)
         results['xray_avg_mean'] = xray_docked.mean().item()
         results['xray_avg_median'] = xray_docked.median().item()
@@ -163,17 +166,28 @@ def analyze_fold(samples: dict, fold_name: str) -> dict:
     return results
 
 
-def find_sample_files(results_dir: str) -> list:
-    """Find all samples.pkl.gz files in the results directory."""
+def find_sample_files(results_dir: str, fold_pattern: str = None) -> list:
+    """Find all samples.pkl.gz files in the results directory.
+    
+    Args:
+        results_dir: Directory containing fold subdirectories or sample files directly.
+        fold_pattern: Optional glob pattern to filter fold directories.
+                      E.g. 'fold_*_flow_t_50_e_100_ca' to select specific experiment folds.
+                      If None, matches any directory starting with 'fold_'.
+    """
     results_dir = Path(results_dir)
     sample_files = []
     
-    # Check for fold directories
-    for fold_dir in sorted(results_dir.glob('fold_*')):
-        for sample_file in fold_dir.glob('samples*.pkl.gz'):
-            sample_files.append(sample_file)
+    # Determine the glob pattern for fold directories
+    pattern = fold_pattern if fold_pattern else 'fold_*'
     
-    # Check for direct sample files
+    # Check for fold directories (handles both 'fold_1' and 'fold_1_flow_t_50_e_100_ca' naming)
+    for fold_dir in sorted(results_dir.glob(pattern)):
+        if fold_dir.is_dir():
+            for sample_file in fold_dir.glob('samples*.pkl.gz'):
+                sample_files.append(sample_file)
+    
+    # Check for direct sample files in the results dir itself
     for sample_file in results_dir.glob('samples*.pkl.gz'):
         sample_files.append(sample_file)
     
@@ -183,7 +197,12 @@ def find_sample_files(results_dir: str) -> list:
 def main():
     parser = argparse.ArgumentParser(description='Analyze 8K pMHC structure prediction results')
     parser.add_argument('--results-dir', type=str, required=True,
-                        help='Directory containing samples.pkl.gz files')
+                        help='Directory containing fold subdirectories with samples.pkl.gz files. '
+                             'E.g. ./results/rmse_values/flow/ to aggregate all folds.')
+    parser.add_argument('--fold-pattern', type=str, default=None,
+                        help='Glob pattern to match fold directories. '
+                             'E.g. "fold_*_flow_t_50_e_100_ca" to select specific experiment folds. '
+                             'Default: "fold_*" (matches all fold directories).')
     parser.add_argument('--output-dir', type=str, default='./analysis_output',
                         help='Directory to save analysis results')
     parser.add_argument('--cutoff', type=float, default=10.0,
@@ -193,7 +212,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Find sample files
-    sample_files = find_sample_files(args.results_dir)
+    sample_files = find_sample_files(args.results_dir, args.fold_pattern)
     
     if not sample_files:
         print(f"No sample files found in {args.results_dir}")

@@ -133,7 +133,7 @@ class EquivariantUpdate(nn.Module):
         self.reflection_equiv = reflection_equiv
         self.ba = ba
         input_edge = hidden_nf * 2 + edges_in_d
-        input_rot = hidden_nf * 2 + 1 + edges_in_d #+ 3 # dist_sq is size 3
+        input_rot = hidden_nf * 2 + 1 + edges_in_d 
         self.variational = variational
         self.angle_dim = 14
         
@@ -144,7 +144,7 @@ class EquivariantUpdate(nn.Module):
             act_fn,
             nn.Linear(hidden_nf, 1, bias=False))
 
-        nn.init.zeros_(self.coord_mlp[-1].weight) # roos 
+        nn.init.zeros_(self.coord_mlp[-1].weight) 
         
         self.cross_product_mlp = nn.Sequential(
             nn.Linear(input_edge, hidden_nf),
@@ -163,7 +163,7 @@ class EquivariantUpdate(nn.Module):
             act_fn,
             nn.Linear(hidden_nf, 3, bias=False)
         )
-        nn.init.zeros_(self.rot_mlp[-1].weight) # roos
+        nn.init.zeros_(self.rot_mlp[-1].weight) 
 
         self.angle_mlp = nn.Sequential(
             nn.Linear(input_edge + self.angle_dim, hidden_nf),
@@ -231,7 +231,6 @@ class EquivariantUpdate(nn.Module):
                     edge_attr, edge_mask, update_coords_mask=None, mol_dim=None):
         row, col = edge_index
         input_tensor = torch.cat([h[row], h[col], edge_attr], dim=1)
-        # input_tensor = m
 
         if self.tanh:
             l = torch.tanh(self.coord_mlp(input_tensor))
@@ -322,7 +321,6 @@ class EquivariantUpdate(nn.Module):
         angle_diff = torch.stack([sin_diff, cos_diff], dim=-1).view(-1,self.angle_dim) 
 
         input_tensor = torch.cat([h[row], h[col], edge_attr, angle_diff], dim=1)
-        # input_tensor = m
 
         if self.tanh:
             trans = angle_diff * torch.tanh(self.angle_mlp(input_tensor))
@@ -639,7 +637,6 @@ def coord2cross(x, edge_index, batch_mask, norm_constant=1):
                         x[col]-mean[batch_mask[col]], dim=1)
     norm = torch.sqrt(torch.sum(cross**2, dim=1, keepdim=True) + 1e-5)
     cross = cross / (norm + norm_constant)
-    #print if cross is 0
     if torch.any(norm < 1e-6):
         print("Warning: Zero cross product detected in coord2cross. Check for collinear points.")
     return cross
@@ -666,66 +663,3 @@ def unsorted_segment_sum(data, segment_ids, num_segments, normalization_factor, 
         norm[norm == 0] = 1
         result = result / norm
     return result
-
-
-def log_map(R, eps=1e-6):
-    """
-    Logarithmic map for SO(3) with Taylor expansion for small angles.
-    Note: Does not handle the pi-singularity explicitly (requires axis-angle logic).
-    """
-    tr = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]
-    # Clamp to stay within arccos domain
-    cos_theta = (0.5 * (tr - 1)).clamp(-1 + eps, 1 - eps)
-    theta = torch.acos(cos_theta)
-    
-    # Pre-calculate R - R^T vee
-    skew_vec = torch.stack([
-        R[:, 2, 1] - R[:, 1, 2],
-        R[:, 0, 2] - R[:, 2, 0],
-        R[:, 1, 0] - R[:, 0, 1]
-    ], dim=-1)
-    
-    # Taylor expansion for theta -> 0
-    # theta / sin(theta) approx 1 + theta^2 / 6
-    # We need: theta / (2 * sin(theta)) approx 0.5 * (1 + theta^2 / 6)
-    mask = (theta < eps).unsqueeze(-1)
-    scale_small = 0.5 * (1 + (theta**2) / 6)
-    scale_large = theta / (2 * torch.sin(theta))
-    
-    v = torch.where(mask, scale_small.unsqueeze(-1), scale_large.unsqueeze(-1)) * skew_vec
-    return v
-
-def exp_map(v, eps=1e-7):
-    """
-    Rodrigues' formula for batch SO(3) exponential map.
-    """
-    theta_sq = torch.sum(v**2, dim=1, keepdim=True) # Shape: (N, 1)
-    theta = torch.sqrt(theta_sq + eps)
-    
-    vx, vy, vz = v[:, 0], v[:, 1], v[:, 2]
-    N = v.shape[0]
-    
-    # Initialize K
-    K = torch.zeros((N, 3, 3), device=v.device, dtype=v.dtype)
-    K[:, 0, 1] = -vz
-    K[:, 0, 2] = vy
-    K[:, 1, 0] = vz
-    K[:, 1, 2] = -vx
-    K[:, 2, 0] = -vy
-    K[:, 2, 1] = vx
-    
-    K_sq = torch.bmm(K, K)
-    I = torch.eye(3, device=v.device, dtype=v.dtype).unsqueeze(0) # Shape: (1, 3, 3)
-    
-    mask = (theta_sq < eps) # Shape: (N, 1)
-    
-    c1 = torch.where(mask, 1.0 - theta_sq / 6, torch.sin(theta) / theta)
-    c2 = torch.where(mask, 0.5 - theta_sq / 24, (1.0 - torch.cos(theta)) / theta_sq)
-    
-    # Use .view(N, 1, 1) to be explicit for broadcasting
-    c1 = c1.view(N, 1, 1)
-    c2 = c2.view(N, 1, 1)
-    
-    # R shape will be (N, 3, 3)
-    R = I + c1 * K + c2 * K_sq
-    return R

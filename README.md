@@ -1,12 +1,19 @@
 
-# MHC-Diff
-Structure-based Equivarinat Diffusion Models for cancer immunotherapy
+# MHC-Flow
+Structure-based Equivariant Flow Matching Models for cancer immunotherapy
 
 ![Project Image](./Diffusion%20Chain.png)
 
 ## Overview
 
-Equivariant Diffusion Model for generating peptide-MHC structures
+Equivariant Flow Matching Model for generating peptide-MHC structures
+
+## Dataset
+**Downloading dataset**:
+```
+wget -O /<repo/name>/data.tar.xz https://zenodo.org/records/14968656/files/swiftmhc-supplementary-data-8k-v1.tar.xz?download=1
+tar -xvf /<repo/name>/data.tar.xz
+```
 
 ## Installation
 
@@ -42,6 +49,16 @@ To set up the environment, please follow the instructions carefully. **Ensure th
    conda install -c conda-forge biopython=1.79
    pip install prody
    pip install pandas
+   ```
+6. **Install Openfold**
+   ```
+   git clone https://github.com/aqlaboratory/openfold.git
+
+   cd openfold
+   
+   scripts/install_third_party_dependencies.sh
+   #or 
+   pip install --user --no-build-isolation .
    ```
 
 ## 📁 Configuration

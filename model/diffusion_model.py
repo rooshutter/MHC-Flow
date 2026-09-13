@@ -119,7 +119,6 @@ class Conditional_Diffusion_Model(nn.Module):
 
         # dataset info
         self.num_atoms = num_atoms
-        # print("num_atoms:", self.num_atoms) #20
         self.num_residues = num_residues
         self.norm_values = norm_values
         self.x_dim = 3
@@ -139,22 +138,8 @@ class Conditional_Diffusion_Model(nn.Module):
     def forward(self, z_data):
 
         molecule, protein_pocket = z_data
-        # print("molecule keys:", molecule.keys()) # molecule keys: dict_keys(['x', 'h', 'size', 'idx', 'pos_in_seq', 'graph_name'])
-        # print("protein pocket keys:", protein_pocket.keys()) # protein pocket keys: dict_keys(['x', 'h', 'size', 'idx'])
-
-        # molecule x shape: torch.Size([288, 3]) 3d positions
-        # molecule h shape: torch.Size([288, 20]) (one-hot encoding of amino acid type)
-        # molecule size shape: torch.Size([32]) number of amino acids in each peptide in the batch = 9
-        # molecule idx shape: torch.Size([288])  to which molecule in the batch each aa belongs
-        # molecule pos_in_seq shape: torch.Size([288]) which position in the peptide chain each aa has (1-9)
-        # molecule graph_name shape: 32 BA-55312
-        # protein pocket x shape: torch.Size([5760, 3])
-        # protein pocket h shape: torch.Size([5760, 20])
-        # protein pocket size shape: torch.Size([32])
-        # protein pocket idx shape: torch.Size([5760])
 
         # add position in peptide chain information
-        # print("position encoding:", self.position_encoding) true
         if self.position_encoding:
             molecule_pos = molecule['pos_in_seq']
         else:
@@ -168,9 +153,6 @@ class Conditional_Diffusion_Model(nn.Module):
         
         # compute denoised mol
         # z_t_mol = z_t_mol - self.noise_schedule(t, 'sigma')[molecule['idx']] * epsilon_hat_mol
-        # print(f"{z_t_mol[0]=}")
-        # print(f"{molecule['x'][0]=}")
-
 
         if self.training:
 
@@ -208,7 +190,6 @@ class Conditional_Diffusion_Model(nn.Module):
         t = torch.randint(t_low, self.T + 1, size=(batch_size, 1), device=device)
 
         # high_noise_training_schedule (experiment to improve sampling start, not used in final model)
-        # print("high_noise_training:", self.high_noise_training) false
         if self.high_noise_training:
             split_point = int(0.95 * self.T)
             t = torch.empty((batch_size, 1), device=device)
@@ -577,6 +558,7 @@ class Conditional_Diffusion_Model(nn.Module):
             sampling_without_noise,
             data_dir,
             run_id,
+            fold=None,
         ):
         '''
         This function takes a molecule and a protein and return the most likely joint structure.

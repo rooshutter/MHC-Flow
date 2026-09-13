@@ -28,19 +28,17 @@ def one_hot_encode_sequence(sequence):
 
 class PDB_Dataset(Dataset):
     
-    def __init__(self, datadir, split='train', fold="1", all_atom=False): # Roos: fold hardcoded to 1 for now
+    def __init__(self, datadir, split='train', fold="1", all_atom=False): 
         """
         Args:
             datadir (str): Path to the directory where HDF5 files are located.
             split (str): Dataset split, one of 'train', 'valid', 'test'.
         """
         # Define the HDF5 file paths for the dataset split
-        # if split == 'test': # roos
-        #     self.hdf5_path = os.path.join(datadir, f'BA_cluster{fold}.hdf5')
-        # else:
-        #     self.hdf5_path = os.path.join(datadir, f'{split}_fold{fold}.hdf5')
-
-        self.hdf5_path = os.path.join(datadir, f'{split}.hdf5')
+        if fold:
+            self.hdf5_path = os.path.join(datadir, f'folds/fold_{fold}', f'{split}.hdf5')
+        else:
+            self.hdf5_path = os.path.join(datadir, f'{split}.hdf5')
 
         print(f"Loading dataset from {self.hdf5_path}...")
 
@@ -651,29 +649,91 @@ class PDB_Dataset_all(Dataset):
 
 class PDB_Dataset_swift(Dataset):
 
+    # Mapping of which xray clusters go to test/valid for each fold.
+    # The remaining clusters go to train.
+    XRAY_FOLD_MAPPING = {
+        "1":  {"test": [0], "valid": [6]},
+        "2":  {"test": [1], "valid": [7]},
+        "3":  {"test": [2], "valid": [5]},
+        "4":  {"test": [3], "valid": [2]},
+        "5":  {"test": [4], "valid": [6]},
+        "6":  {"test": [5], "valid": [7]},
+        "7":  {"test": [6], "valid": [5]},
+        "8":  {"test": [7], "valid": [2]},
+        "9":  {"test": [8], "valid": [7]},
+        "10": {"test": [9], "valid": [7]},
+    }
+
     def __init__(self, datadir="/scratch-shared/roos/preprocessed/", split='train', fold="1", path=None):
         """
         Args:
             datadir (str): Path to the directory where HDF5 files are located.
             split (str): Dataset split, one of 'train', 'valid', 'test', or 'BA'.
-            fold (str): Fold number to load.
+            fold (str): Fold number (1-indexed, matching CA-only fold_1 through fold_10).
             path (str): Specific file name for test clusters.
         """
         self.datadir = datadir
         
+        # Preprocessed files are 0-indexed (train_fold0..9, BA_cluster0..9)
+        # while fold numbers in config are 1-indexed (fold 1..10, matching CA fold_1..fold_10)
+        file_idx = int(fold) - 1
+
+        # entry_sources maps each index to (hdf5_path, entry_name)
+        self.entry_sources = []
+        self.entry_names = []
+
         if split == 'test' and path is not None:
             self.hdf5_path = os.path.join(datadir, f'{path}.hdf5')
+            self._load_entries_from_file(self.hdf5_path)
         elif split == 'BA':
-            self.hdf5_path = os.path.join(datadir, f'BA_cluster{fold}.hdf5')
+            self.hdf5_path = os.path.join(datadir, f'BA_cluster{file_idx}.hdf5')
+            self._load_entries_from_file(self.hdf5_path)
+            # Also load xray test cluster(s) for this fold
+            fold_mapping = self.XRAY_FOLD_MAPPING.get(str(fold), None)
+            if fold_mapping is not None:
+                for cluster_id in fold_mapping["test"]:
+                    xray_path = os.path.join(datadir, f'xray_cluster{cluster_id}.hdf5')
+                    if os.path.exists(xray_path):
+                        self._load_entries_from_file(xray_path)
+                    else:
+                        print(f"Warning: xray cluster file not found: {xray_path}")
         else:
-            self.hdf5_path = os.path.join(datadir, f'{split}_fold{fold}.hdf5')
-            
-        print(f"Loading SwiftMHC dataset from {self.hdf5_path}...")
+            # Load BA (Pandora) data
+            ba_path = os.path.join(datadir, f'{split}_fold{file_idx}.hdf5')
+            self.hdf5_path = ba_path  # keep for backward compat
+            self._load_entries_from_file(ba_path)
 
-        with h5py.File(self.hdf5_path, 'r') as f5:
-            self.entry_names = list(f5.keys())
+            # Load xray cluster data for this fold and split
+            fold_mapping = self.XRAY_FOLD_MAPPING.get(str(fold), None)
+            if fold_mapping is not None:
+                test_clusters = fold_mapping["test"]
+                valid_clusters = fold_mapping["valid"]
+
+                if split == 'test':
+                    xray_clusters = test_clusters
+                elif split == 'valid':
+                    xray_clusters = valid_clusters
+                else:  # train
+                    xray_clusters = [c for c in range(10) if c not in test_clusters and c not in valid_clusters]
+
+                for cluster_id in xray_clusters:
+                    xray_path = os.path.join(datadir, f'xray_cluster{cluster_id}.hdf5')
+                    if os.path.exists(xray_path):
+                        self._load_entries_from_file(xray_path)
+                    else:
+                        print(f"Warning: xray cluster file not found: {xray_path}")
             
-        print(f"Loaded {len(self.entry_names)} entries from {split} split.")
+        print(f"Loaded {len(self.entry_names)} entries from {split} split (fold {fold}).")
+
+    def _load_entries_from_file(self, hdf5_path):
+        """Load entry names from an HDF5 file and track their source."""
+        print(f"Loading SwiftMHC dataset from {hdf5_path}...")
+        with h5py.File(hdf5_path, 'r') as f5:
+            names = list(f5.keys())
+        for name in names:
+            self.entry_sources.append((hdf5_path, name))
+            self.entry_names.append(name)
+        print(f"  -> {len(names)} entries from {os.path.basename(hdf5_path)}")
 
     def __len__(self) -> int:
         return len(self.entry_names)
@@ -685,10 +745,10 @@ class PDB_Dataset_swift(Dataset):
         """
         Retrieves pre-processed tensors for a single pMHC entry.
         """
-        entry_name = self.entry_names[index]
+        hdf5_path, entry_name = self.entry_sources[index]
         data = {}
 
-        with h5py.File(self.hdf5_path, 'r') as f5:
+        with h5py.File(hdf5_path, 'r') as f5:
             group = f5[entry_name]
             
             restypes = ["A","R","N","D","C","Q","E","G","H","I","L","K","M","F","P","S","T","W","Y","V"]
@@ -766,6 +826,10 @@ class PDB_Dataset_swift(Dataset):
             if 'affinity' in group:
                 data['affinity'] = torch.tensor(np.array(group['affinity']), dtype=torch.float32)
 
+            # BA mask: True if this entry has a real binding affinity score (Pandora/BA- entries),
+            # False for X-ray entries which have a dummy affinity of 1.0
+            data['ba_mask'] = torch.tensor(entry_name.startswith('BA-'), dtype=torch.bool)
+
             # Residue Index (SwiftMHC style)
             pep_max_len = 14 # Default for peptide
             pro_max_len = 180 # Default for protein
@@ -785,7 +849,7 @@ class PDB_Dataset_swift(Dataset):
         for key in batch[0].keys():
             if key == 'graph_name':
                 data_batch[key] = [x[key] for x in batch]
-            elif key in ['num_peptide_residues', 'num_protein_pocket_residues', 'affinity']:
+            elif key in ['num_peptide_residues', 'num_protein_pocket_residues', 'affinity', 'ba_mask']:
                 if key in batch[0]:
                     data_batch[key] = torch.tensor([x[key] for x in batch])
             elif 'idx' in key:

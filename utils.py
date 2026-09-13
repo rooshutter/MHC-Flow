@@ -17,10 +17,13 @@ from openfold.np import residue_constants
 
 
 def create_new_pdb_hdf5(
-        peptide, peptide_idx, graph_name, run_id, data_dir, time_step, sample_id, atom_level=False
+        peptide, peptide_idx, graph_name, run_id, data_dir, time_step, sample_id, atom_level=False, fold=None
 ):
     if data_dir == "/scratch-shared/roos/preprocessed/":
-        hdf5_file = h5py.File(f'{data_dir}BA_cluster1.hdf5', 'r')
+        file_idx = int(fold) - 1 if fold is not None else 1
+        hdf5_file = h5py.File(f'{data_dir}BA_cluster{file_idx}.hdf5', 'r')
+    elif fold is not None:
+        hdf5_file = h5py.File(os.path.join(data_dir, 'folds', f'fold_{fold}', 'test.hdf5'), 'r')
     else:
         hdf5_file = h5py.File(f'{data_dir}/test.hdf5', 'r')
         
@@ -162,65 +165,98 @@ def create_new_pdb_hdf5_swift(
     """
     # 1) Determine HDF5 path (following dataset_8k_xray.py logic)
     # Search for the file containing the graph_name
-    possible_files = [
-        Path(data_dir) / f"BA_cluster{fold}.hdf5",
-        Path(data_dir) / f"train_fold{fold}.hdf5",
-        Path(data_dir) / f"valid_fold{fold}.hdf5",
-    ]
-    # Add xray clusters if they exist
-    for i in range(10):
-        possible_files.append(Path(data_dir) / f"xray_cluster{i}.hdf5")
+
+    # Select the source file directly instead of searching every HDF5 file.
+    file_idx = int(fold) - 1
+
+    if graph_name.startswith("BA-"):
+        source_file = Path(data_dir) / f"BA_cluster{file_idx}.hdf5"
+    else:
+        source_file = Path(data_dir) / f"xray_cluster{file_idx}.hdf5"
+
+    if not source_file.exists():
+        raise FileNotFoundError(
+            f"Expected source file does not exist: {source_file}"
+        )
+
+    with h5py.File(source_file, "r") as f5:
+        if graph_name not in f5:
+            raise KeyError(
+                f"{graph_name} not found in expected source file {source_file}"
+            )
+
+        group = f5[graph_name]
+
+        protein_data = {
+            "aatype": group["protein"]["aatype"][:],
+            "atom_positions": group["protein"]["all_atom_positions"][:],
+            "atom_mask": group["protein"]["all_atom_mask"][:],
+        }
+
+        peptide_data = {
+            "aatype": group["peptide"]["aatype"][:],
+        }
+
+    # file_idx = int(fold) - 1
+    # possible_files = [
+    #     Path(data_dir) / f"BA_cluster{file_idx}.hdf5",
+    #     Path(data_dir) / f"train_fold{file_idx}.hdf5",
+    #     Path(data_dir) / f"valid_fold{file_idx}.hdf5",
+    # ]
+    # # Add xray clusters if they exist
+    # for i in range(10):
+    #     possible_files.append(Path(data_dir) / f"xray_cluster{i}.hdf5")
     
-    hdf5_path = None
-    group = None
-    f5_handle = None
+    # hdf5_path = None
+    # group = None
+    # f5_handle = None
 
-    for p in possible_files:
-        if p.exists():
-            try:
-                f5 = h5py.File(p, 'r')
-                if graph_name in f5:
-                    hdf5_path = p
-                    group = f5[graph_name]
-                    # We found it, but we need to keep the handle or copy data
-                    protein_data = {
-                        'aatype': group['protein']['aatype'][:],
-                        'atom_positions': group['protein']['all_atom_positions'][:],
-                        'atom_mask': group['protein']['all_atom_mask'][:]
-                    }
-                    peptide_data = {
-                        'aatype': group['peptide']['aatype'][:]
-                    }
-                    f5.close()
-                    break
-                else:
-                    # Try partial match fallback
-                    found_key = None
-                    for k in f5.keys():
-                        if graph_name in k or k in graph_name:
-                            found_key = k
-                            break
-                    if found_key:
-                        print(f"Warning: {graph_name} not found directly in {p}. Using {found_key} instead.")
-                        hdf5_path = p
-                        group = f5[found_key]
-                        protein_data = {
-                            'aatype': group['protein']['aatype'][:],
-                            'atom_positions': group['protein']['all_atom_positions'][:],
-                            'atom_mask': group['protein']['all_atom_mask'][:]
-                        }
-                        peptide_data = {
-                            'aatype': group['peptide']['aatype'][:]
-                        }
-                        f5.close()
-                        break
-                    f5.close()
-            except Exception as e:
-                print(f"Error checking {p}: {e}")
-                continue
+    # for p in possible_files:
+    #     if p.exists():
+    #         try:
+    #             f5 = h5py.File(p, 'r')
+    #             if graph_name in f5:
+    #                 hdf5_path = p
+    #                 group = f5[graph_name]
+    #                 # We found it, but we need to keep the handle or copy data
+    #                 protein_data = {
+    #                     'aatype': group['protein']['aatype'][:],
+    #                     'atom_positions': group['protein']['all_atom_positions'][:],
+    #                     'atom_mask': group['protein']['all_atom_mask'][:]
+    #                 }
+    #                 peptide_data = {
+    #                     'aatype': group['peptide']['aatype'][:]
+    #                 }
+    #                 f5.close()
+    #                 break
+    #             else:
+    #                 # Try partial match fallback
+    #                 found_key = None
+    #                 for k in f5.keys():
+    #                     if graph_name in k or k in graph_name:
+    #                         found_key = k
+    #                         break
+    #                 if found_key:
+    #                     print(f"Warning: {graph_name} not found directly in {p}. Using {found_key} instead.")
+    #                     hdf5_path = p
+    #                     group = f5[found_key]
+    #                     protein_data = {
+    #                         'aatype': group['protein']['aatype'][:],
+    #                         'atom_positions': group['protein']['all_atom_positions'][:],
+    #                         'atom_mask': group['protein']['all_atom_mask'][:]
+    #                     }
+    #                     peptide_data = {
+    #                         'aatype': group['peptide']['aatype'][:]
+    #                     }
+    #                     f5.close()
+    #                     break
+    #                 f5.close()
+    #         except Exception as e:
+    #             print(f"Error checking {p}: {e}")
+    #             continue
 
-    if hdf5_path is None:
-        raise KeyError(f"{graph_name} not found in any expected HDF5 file in {data_dir}.")
+    # if hdf5_path is None:
+    #     raise KeyError(f"{graph_name} not found in any expected HDF5 file in {data_dir}.")
 
     # 2) Build output path
     out_dir = Path('results') / 'structures' / run_id
@@ -298,7 +334,7 @@ def write_updated_peptide_coords_pdb_swiftmhc(
         final_aatype = peptide_aatype
         final_positions = peptide_atom37_positions
         final_mask = peptide_atom37_mask
-        final_residue_index = np.arange(len(peptide_aatype))
+        final_residue_index = np.arange(1, len(peptide_aatype) + 1)
         final_chain_index = np.zeros(len(peptide_aatype))
     else:
         # Protein is chain A (index 0), Peptide is chain B (index 1)
@@ -308,7 +344,7 @@ def write_updated_peptide_coords_pdb_swiftmhc(
         
         n_prot = len(protein_data['aatype'])
         n_pep = len(peptide_aatype)
-        final_residue_index = np.concatenate([np.arange(n_prot), np.arange(n_pep)])
+        final_residue_index = np.concatenate([np.arange(1, n_prot + 1), np.arange(1, n_pep + 1)])
         final_chain_index = np.concatenate([np.zeros(n_prot), np.ones(n_pep)])
     
     # 3) Create OpenFold Protein object

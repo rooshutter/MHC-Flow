@@ -35,7 +35,9 @@ class Flow_Matching_Model(nn.Module):
         num_residues: int,
         norm_values: list,
         all_atom = False,
-
+        variational: bool = True,
+        solver: str = "euler",
+        ba: bool = False,
     ):
         super().__init__()
 
@@ -86,7 +88,7 @@ class Flow_Matching_Model(nn.Module):
             z_t_mol = z_t_mol + torch.randn_like(z_t_mol) * self.noise_scaling
 
         
-        v_hat_mol, v_hat_pro, c_s = self.neural_net(z_t_mol, z_t_pro, t, molecule['idx'], protein_pocket['idx'], molecule_pos)
+        v_hat_mol, v_hat_pro, c_s, _ = self.neural_net(z_t_mol, z_t_pro, t, molecule['idx'], protein_pocket['idx'], molecule_pos)
 
         
         if self.training:
@@ -113,7 +115,6 @@ class Flow_Matching_Model(nn.Module):
         protein_pocket['x'] = protein_pocket['x'] / self.norm_values[0]
         protein_pocket['h'] = protein_pocket['h'] / self.norm_values[1]
 
-        
         # sample t ~ U(0,...,T) for each graph individually
         t_low = 0 if self.train else 1
         t = torch.randint(t_low, self.T + 1, size=(batch_size, 1), device=device)
@@ -124,18 +125,11 @@ class Flow_Matching_Model(nn.Module):
         # option for computing t = 0 representations
         t = torch.zeros((batch_size, 1), device=device) if t_is_0 else t
         
-
-        
-        
         xh_mol = torch.cat((molecule['x'], molecule['h']), dim=1)
-        # xh_mol = torch.cat((molecule['x'], molecule['h']), dim=-1)
         xh_pro = torch.cat((protein_pocket['x'], protein_pocket['h']), dim=1)
-        # xh_pro = torch.cat((protein_pocket['x'], protein_pocket['h']), dim=-1)
 
         # center of mass handling
-        # print("com_handling:", self.com_handling) peptide
         if self.com_handling == 'both':
-            # old centering approach
             xh_mol[:,:self.x_dim] = xh_mol[:,:self.x_dim] - scatter_mean(xh_mol[:,:self.x_dim], molecule['idx'], dim=0)[molecule['idx']]
             xh_pro[:,:self.x_dim] = xh_pro[:,:self.x_dim] - scatter_mean(xh_pro[:,:self.x_dim], protein_pocket['idx'], dim=0)[protein_pocket['idx']]
         elif self.com_handling == 'no_COM':
@@ -180,10 +174,8 @@ class Flow_Matching_Model(nn.Module):
             z_t_pro[:,:self.x_dim] = z_t_pro[:,:self.x_dim] - mean[protein_pocket['idx']]
 
         v_x_mol = xh_mol[:,:self.x_dim] - z_x_mol 
-        # v_x_mol = z_x_mol - xh_mol[:,:self.x_dim]
 
         v_pro = xh_pro - z_pro
-        # v_pro = z_pro - xh_pro
 
         if self.com_handling == 'both':
             dumy_variable = 0
@@ -307,7 +299,7 @@ class Flow_Matching_Model(nn.Module):
         # use neural network to predict noise for t = 0
         # v_hat_mol, v_hat_pro, c_s = self.neural_net(z_t_mol, z_t_pro, t, molecule['idx'], protein_pocket['idx'], molecule_pos)
         # epsilon_hat_0_mol, epsilon_hat_0_pro, _ = self.neural_net(z_0_mol, z_0_pro, t_0, molecule['idx'], protein_pocket['idx'], molecule_pos)
-        v_hat_0_mol, v_hat_0_pro, _ = self.neural_net(z_0_mol, z_0_pro, t_0, molecule['idx'], protein_pocket['idx'], molecule_pos)
+        v_hat_0_mol, v_hat_0_pro, _, _ = self.neural_net(z_0_mol, z_0_pro, t_0, molecule['idx'], protein_pocket['idx'], molecule_pos)
 
         loss_x_mol_t0, loss_x_protein_t0, loss_h_t0 = self.loss_t0(
             molecule, z_0_mol, v_target_0_mol, v_hat_0_mol,
@@ -358,8 +350,6 @@ class Flow_Matching_Model(nn.Module):
 
         loss_x_protein_t0 = torch.zeros(protein_pocket['size'].size(0), device=molecule['x'].device)
 
-        # print(f"{self.features_fixed=}")
-
         if self.features_fixed:
 
             loss_h_t0 = torch.zeros(molecule['size'].size(0), device=molecule['x'].device)
@@ -367,7 +357,6 @@ class Flow_Matching_Model(nn.Module):
         else:
             ## Computation for changed features
 
-            
             sigma_0 = self.noise_schedule(t, 'sigma')
             sigma_0_unnormalized = sigma_0 * self.norm_values[1]
             # unnormalize not necessary for molecule['h'] because molecule was only locally normalized (can change that if necessary later)
@@ -398,36 +387,19 @@ class Flow_Matching_Model(nn.Module):
         device=molecule['x'].device
 
         molecule['x'] = molecule['x'] - scatter_mean(molecule['x'], molecule['idx'], dim=0)[molecule['idx']]
-       
-        # z_t_mol_x = alpha_t[molecule['idx']] * xh_mol[:, :self.x_dim] + sigma_t[molecule['idx']] * eps_x_mol
-        # z_t_mol_x = (1 - t[molecule['idx']]) * molecule['x'] + (t[molecule['idx']]) * z_x_mol
-
 
         T_normalized = torch.ones((len(molecule['size']), 1), device=device)
-        # alpha_T = self.noise_schedule(T_normalized, 'alpha')
-        # sigma_T = self.noise_schedule(T_normalized, 'sigma')
-        # sigma_T_value = sigma_T[0,0].item()
+
         alpha_T = 0.0  # At t=1, (1-t) is 0
         sigma_T_val = 1.0
 
-        # mu_x_mol = molecule['x'] * alpha_T[molecule['idx']] # [:,3]
         mu_x_mol = molecule['x'] * alpha_T # [:,3]
-        # mu_h_mol = molecule['h'] * alpha_T[molecule['idx']] # [:,20]
         
-        # sigma_T_x = torch.full(alpha_T.shape, fill_value=sigma_T_value, device=device).squeeze() # [64,1]
-        # sigma_T_h = torch.full(alpha_T.shape, fill_value=sigma_T_value, device=device).squeeze() # [64,1]
-        # sigma_T_x = torch.full((len(molecule['size']),), fill_value=sigma_T_val * self.noise_scaling, device=device)
         sigma_T_x = torch.full((len(molecule['size']),), fill_value=sigma_T_val, device=device)
-        # sigma_T_h = torch.full((len(molecule['size']),), fill_value=sigma_T_val, device=device)
-
 
         # KL computation h (if features are diffused)
         kl_h = 0
-        # zeros = torch.zeros_like(mu_h_mol)
-        # ones = torch.ones_like(sigma_T_h)
-        # mu_norm2 = scatter_add(torch.sum((mu_h_mol - zeros) ** 2, dim=1), molecule['idx'], dim=0)
-        # kl_h = torch.log(ones / sigma_T_h) + 0.5 * (sigma_T_h**2 + mu_norm2) / (ones**2) - 0.5
-
+  
         # KL computation x
         zeros = torch.zeros_like(mu_x_mol)
         ones = torch.ones_like(sigma_T_x) #* self.noise_scaling
@@ -491,7 +463,7 @@ class Flow_Matching_Model(nn.Module):
     
 
     @torch.no_grad()
-    def sample_structure(self, num_samples, molecule, protein_pocket, sampling_without_noise, data_dir, run_id, save_trajectory=False):
+    def sample_structure(self, num_samples, molecule, protein_pocket, sampling_without_noise, data_dir, run_id, save_trajectory=False, fold=None):
         
         device = molecule['x'].device
         num_graphs = molecule['size'].size(0)
@@ -509,7 +481,6 @@ class Flow_Matching_Model(nn.Module):
         xh_pro = torch.cat((protein_pocket['x'], protein_pocket['h']), dim=1)
 
         if self.com_handling == 'both':
-            # old centering approach
             z_x_mol = z_x_mol - scatter_mean(z_x_mol, molecule['idx'], dim=0)[molecule['idx']]
             xh_pro[:,:self.x_dim] = xh_pro[:,:self.x_dim] - scatter_mean(xh_pro[:,:self.x_dim], protein_pocket['idx'], dim=0)[protein_pocket['idx']]
         elif self.com_handling == 'no_COM':
@@ -528,7 +499,6 @@ class Flow_Matching_Model(nn.Module):
         current_xh_mol = torch.cat((z_x_mol, z_h_mol), dim=1)
         
         steps = self.T // self.sampling_stepsize
-        # print(f"Sampling with {steps} steps and step size {self.sampling_stepsize}")
         dt = 1.0 / steps
 
         solver = "euler"
@@ -540,7 +510,7 @@ class Flow_Matching_Model(nn.Module):
                 t_array = torch.full((num_graphs, 1), fill_value=t_val, device=device)
 
                 # Predict velocity v_hat
-                v_hat_mol, _, c_s = self.neural_net(
+                v_hat_mol, _, c_s, _ = self.neural_net(
                     current_xh_mol, xh_pro, t_array, 
                     molecule['idx'], protein_pocket['idx'], molecule_pos
                 )
@@ -551,9 +521,6 @@ class Flow_Matching_Model(nn.Module):
                 else:
                     current_xh_mol += v_hat_mol * dt
 
-                # if self.com_handling != 'no_COM':
-                #     mean = scatter_mean(current_xh_mol[:, :self.x_dim], molecule['idx'], dim=0)
-                #     current_xh_mol[:, :self.x_dim] -= mean[molecule['idx']]
                 if self.com_handling == 'both':
                     dumy_variable = 0
                 elif self.com_handling == 'no_COM':
@@ -571,16 +538,6 @@ class Flow_Matching_Model(nn.Module):
                 else:
                     dumy_variable = 0
 
-
-                # print(f"Centered predicted positions (Angstroms): {current_xh_mol[:,:self.x_dim][0]}")
-                # print(f"Centered target positions (Angstroms):    {mol_norm_x[0]}")
-                # error_mol = scatter_add(torch.sum((current_xh_mol[:,:self.x_dim] - mol_norm_x)**2, dim=-1), molecule['idx'], dim=0)
-                # rmse_per_peptide = torch.sqrt(error_mol / molecule['size'])
-
-                # batch_rmse = rmse_per_peptide.mean().item()
-                
-                # print(f"Batch RMSE: {batch_rmse:.4f}") 
-
         elif solver == "euler" or "rk4":
 
             ode_func = ODEWrapper(
@@ -588,7 +545,6 @@ class Flow_Matching_Model(nn.Module):
             )
             
             t_span = torch.tensor([1.0, 0.0], device=device)
-            # t_span = torch.linspace(1.0, 0.0, 11, device=device)
             
             trajectory = odeint(
                 ode_func, 
@@ -598,8 +554,6 @@ class Flow_Matching_Model(nn.Module):
                 options={'step_size': 1.0 / self.T} 
             )
 
-         
-            
             current_xh_mol = trajectory[-1]
             c_s = ode_func.last_c_s
 
@@ -616,11 +570,13 @@ class Flow_Matching_Model(nn.Module):
         xh_mol_final = torch.cat([x_mol_final, h_mol_final], dim=1)
         xh_pro_final = torch.cat([x_pro_final, h_pro_final], dim=1)
 
-        self.safe_pdbs(xh_mol_final, molecule, run_id, data_dir, time_step='F')
+        self.safe_pdbs(xh_mol_final, molecule, run_id, data_dir, time_step='F', fold=fold)
 
-        return (xh_mol_final, xh_pro_final, c_s)
+        ba = 0
+
+        return (xh_mol_final, xh_pro_final, c_s, ba)
     
-    def safe_pdbs(self, pos, molecule, run_id, data_dir, time_step):
+    def safe_pdbs(self, pos, molecule, run_id, data_dir, time_step, fold=None):
 
         for i in range(len(molecule['size'])):
             # (1) extract the peptide position
@@ -641,7 +597,7 @@ class Flow_Matching_Model(nn.Module):
 
             else:
 
-                create_new_pdb_hdf5(peptide_pos, peptide_idx, graph_name, run_id, data_dir, time_step=time_step, sample_id=i)
+                create_new_pdb_hdf5(peptide_pos, peptide_idx, graph_name, run_id, data_dir, time_step=time_step, sample_id=i, fold=fold)
 
 class ODEWrapper(nn.Module):
     def __init__(self, model, xh_pro, molecule, molecule_pos, protein_pocket):
@@ -657,7 +613,7 @@ class ODEWrapper(nn.Module):
     def forward(self, t, xh_mol):
         t_vec = torch.full((self.num_graphs, 1), fill_value=t.item(), device=xh_mol.device)
         
-        v_hat_mol, _, c_s = self.model.neural_net(
+        v_hat_mol, _, c_s, _ = self.model.neural_net(
             xh_mol, self.xh_pro, t_vec, 
             self.molecule_idx, self.protein_idx, self.molecule_pos
         )

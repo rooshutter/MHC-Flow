@@ -3,6 +3,7 @@ import numpy as np
 import math
 import os
 import time
+import csv
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -66,7 +67,8 @@ from ReQFlow.so3_utils import quaternion_slerp_exp, calc_quat_wt_qt_q1, calc_rot
 from ReQFlow.so3_utils import rotmat_to_rotvec, rotvec_to_rotmat, local_log, vector_to_skew_matrix
 
 
-_regression_loss_function = torch.nn.HuberLoss(reduction="none", delta=1.0)
+_regression_loss_function = torch.nn.MSELoss(reduction="none")
+
 
 def _uniform_so3(num_batch, num_res, device):
     return torch.tensor(
@@ -99,7 +101,6 @@ def _compute_torsion_angle_loss( # from swiftmhc
 
     # [*, N, 7]
     norm = torch.sqrt(torch.sum(a**2, dim=-1) + 1e-12)
-    # norm = torch.clamp(norm, min=1e-6)
 
     # [*, N, 7, 2]
     a = a / norm.unsqueeze(-1)
@@ -408,13 +409,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
         self.solver = solver
         self.ba = ba
 
-        # BA prediction is now handled by the dedicated ba_head in NN_Model (architecture.py)
-        # self.ba_module = torch.nn.Sequential(
-        #     torch.nn.Linear(20, 64),
-        #     torch.nn.ReLU(),
-        #     torch.nn.Linear(64, 1),
-        # )
-
     def _center_inputs(self, molecule, protein_pocket):
         """
         Centers both peptide and protein coordinates based on the peptide's 
@@ -422,8 +416,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
         and consistent coordinate systems for all-atom reconstruction and metrics.
         """
         # Calculate mean from peptide backbone CA positions
-        # backbone_rigid_tensor can be 4x4 [N, 4, 4] or 7-dim [N, 7]
-        # In this model, it's typically [Total_N, 4, 4] after collation
         if molecule['backbone_rigid_tensor'].shape[-1] == 4:
             ca_pos = molecule['backbone_rigid_tensor'][:, :3, 3] # [Total_N, 3]
         else:
@@ -477,8 +469,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
             z_t_mol = torch.cat((z_t_mol_q, z_t_mol[:,:,4:]), dim=-1)
 
         mask = molecule['cross_residues_mask'].reshape(molecule['h'].shape[0], molecule['h'].shape[1])
-
-        # ba_hat_not = self.compute_ba(molecule['h'], mask)
 
         if self.ba:
             # Predict binding affinity from the clean ground-truth structure (t = 1)
@@ -540,7 +530,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
         t = t / self.T
 
         t = torch.ones((batch_size, 1, 1), device=device) if t_is_1 else t
-        # t = torch.zeros((batch_size, 1, 1), device=device) if t_is_0 else t
         
         # Target angles
         angles = molecule['torsion_angles_sin_cos']
@@ -572,14 +561,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
 
         xh_pro = torch.cat((T_protein, protein_pocket['h']), dim=-1)
 
-        # T_peptide_z = Rigid.identity(
-        #     molecule['h'].shape[:-1],
-        #     molecule['h'].dtype,
-        #     device,
-        #     self.training,
-        #     fmt="quat",
-        # )
-
         # Get rotation and translation noise
         z_trans = torch.randn((*molecule['h'].shape[:-1], 3), device=device)
         z_trans = z_trans - scatter_mean(z_trans.view(-1, 3), molecule['idx'], dim=0)[molecule['idx']].view(z_trans.shape)
@@ -600,10 +581,8 @@ class Flow_Matching_Model_all_atom(nn.Module):
 
         if self.features_fixed:
             z_h_mol = torch.zeros(size=(len(xh_mol), xh_mol.shape[1], self.num_atoms), device=device)
-            # z_h_mol = torch.zeros(size=(len(xh_mol), self.num_atoms), device=device)
             z_h_pro = torch.zeros(size=(len(xh_pro), xh_pro.shape[1], self.num_residues), device=device)
         else:
-            # for h we need standard normal noise (this would be sampling new peptides)
             z_h_mol = torch.randn(size=(len(xh_mol), xh_mol.shape[1], self.num_atoms), device=device)
             z_h_pro = torch.randn(size=(len(xh_pro), xh_pro.shape[1], self.num_residues), device=device)
 
@@ -633,14 +612,11 @@ class Flow_Matching_Model_all_atom(nn.Module):
         alpha_1 = torch.atan2(angles[:, :, :, 0], angles[:, :, :, 1])
         diff = alpha_1 - alpha_0
         diff = (diff + math.pi) % (2 * math.pi) - math.pi
-        # t = t.unsqueeze(-1)
-        # t = t.squeeze(-1)
         alpha_t = alpha_0 + t * diff
         angles_t = torch.stack([torch.sin(alpha_t), torch.cos(alpha_t)], dim=-1)
         angles_t = angles_t * angle_mask.unsqueeze(-1)
         angles_t = angles_t.reshape(batch_size, size_mol, -1)
         
-        # z_t_mol = torch.cat((T_peptide_t, angles_t, molecule['h']), dim=-1)
         z_t_mol = {
             "rot": rotmats_t,
             "trans": T_peptide_t[:,:,self.rot_dim:],
@@ -650,13 +626,10 @@ class Flow_Matching_Model_all_atom(nn.Module):
         z_t_pro = xh_pro.clone().detach()
 
         # Velocity
-        # Clamp (1-t) to avoid explosion when t is near 1.
-        # Using 1/T as minimum since that's the smallest meaningful time step.
         one_minus_t = torch.clamp(1 - t, min=1.0 / self.T)
 
         xh_mol_rot = xh_mol[:,:,:self.rot_dim].reshape(-1, 9)
         z_x_mol_rot = z_x_mol[:,:,:self.rot_dim].reshape(-1, 9)
-        # rot_rel = torch.matmul(z_x_mol_rot.reshape(-1, 3, 3).transpose(-2, -1), xh_mol_rot.reshape(-1, 3, 3))
         z_t_mol_rot = z_t_mol["rot"].reshape(-1,9)
         rot_rel = torch.matmul(z_t_mol_rot.reshape(-1, 3, 3).transpose(-2, -1), xh_mol_rot.reshape(-1, 3, 3))
         v_rot_mol = rotmat_to_rotvec(rot_rel).reshape(batch_size, size_mol, -1)
@@ -675,10 +648,8 @@ class Flow_Matching_Model_all_atom(nn.Module):
         geodesic_distance = torch.atan2(sin_diff, cos_diff)
         v_mol_angles = geodesic_distance / one_minus_t
         
-        # v_mol_trans = xh_mol[:,:,self.rot_dim:self.rot_dim+self.x_dim] - z_x_mol[:,:,self.rot_dim:self.rot_dim+self.x_dim]
         v_mol_trans = (xh_mol[:,:,self.rot_dim:self.rot_dim+self.x_dim] - z_t_mol['trans']) / one_minus_t
         
-        # v_x_mol = xh_mol[:,:,:T_peptide_z.shape[-1]+angles_t.shape[-1]] - z_x_mol
         v_mol = {
             "rot": v_mol_rot,
             "trans": v_mol_trans,
@@ -686,10 +657,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
             "quat": v_mol_quat
         }
         v_pro = xh_pro - z_pro
-
-        # if len(v_mol.shape) == 2:
-        #     v_x_mol = v_x_mol.view(batch_size, size_mol, -1)
-        #     v_pro = v_pro.view(batch_size, size_pro, -1)
 
         return z_t_mol, z_t_pro, v_mol, v_pro, t
     
@@ -711,10 +678,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
             T_peptide.get_trans(),
         )
         
-        # apply the scale factor, to get the final backbone frames
-        # trans_scale_factor = 10 
-        # backb_to_global = backb_to_global.scale_translation(trans_scale_factor)
-
         angles = angles.view(-1, 9, 7, 2)
         peptide_aatype = molecule['aatype']
         peptide_aatype = peptide_aatype.view(-1, 9, *peptide_aatype.shape[1:])
@@ -730,15 +693,12 @@ class Flow_Matching_Model_all_atom(nn.Module):
             peptide_aatype,
         )
 
-        # calculate the actual omega angles, according to backbone atom positions
         peptide_mask = molecule['cross_residues_mask'].view(pred_xyz.shape[0], -1, *molecule['cross_residues_mask'].shape[1:])
         post_omegas_from_xyz = self._calculate_omegas_from_positions(pred_xyz, peptide_mask)
         last_omega = post_omegas_from_xyz.new_tensor([0.0, -1.0])  # sine 0, cosine -1 : 180 degrees
         last_omega = last_omega.unsqueeze(0).expand(post_omegas_from_xyz.shape[0], -1).unsqueeze(1)
         omegas = torch.cat([post_omegas_from_xyz, last_omega], dim=-2)
-        # insert the omegas in the angle tensors
         angles = torch.cat([omegas.unsqueeze(-2), angles[..., 1:, :]], dim=-2)
-        # unnormalized_angles = torch.cat([omegas.unsqueeze(-2), unnormalized_angles[..., 1:, :]], dim=-2)
 
         return pred_xyz, angles, all_frames_to_global.to_tensor_4x4() 
 
@@ -748,22 +708,29 @@ class Flow_Matching_Model_all_atom(nn.Module):
             z_t_pro, v_pro, v_hat_pro, t, c_s, ba_hat, current_epoch=None, max_epochs=None,
             run_id=None, data_dir=None, save_pdb=False
     ):
-        print(' ')
         batch_size = len(molecule['affinity'])
         size_mol = molecule['size'][0]
 
         if self.ba:
             ba = molecule['affinity']
             ba_hat = ba_hat.squeeze(-1)
-            error_ba = torch.mean((ba - ba_hat) ** 2, dim=-1)
-            print(f"BA RMSE mean: {torch.sqrt(error_ba.mean() + 1e-8)}")
+            
+            # Compute the full affinity loss
+            full_affinity_loss = _regression_loss_function(ba_hat.float(), ba.float())
+            full_error_ba = (ba - ba_hat) ** 2
 
-            print(f"{ba_hat[0]=}, {ba[0]=}")
-            affinity_loss = _regression_loss_function(ba_hat.float(), ba.float())
-            print(f"BA Loss: {affinity_loss.mean()}")
+            # Mask out X-ray samples (which have dummy affinity=1.0)
+            ba_mask = molecule.get('ba_mask', None)
+            if ba_mask is not None:
+                # Zero out loss and error for non-BA samples
+                affinity_loss = full_affinity_loss * ba_mask.float()
+                error_ba = full_error_ba * ba_mask.float()
+            else:
+                affinity_loss = full_affinity_loss
+                error_ba = full_error_ba
         else:
-            error_ba = 0
-            affinity_loss = 0
+            error_ba = torch.tensor(0.0, device=molecule['x'].device)
+            affinity_loss = torch.tensor(0.0, device=molecule['x'].device)
 
         if self.variational:
             T_peptide = Rigid.from_tensor_4x4(molecule['backbone_rigid_tensor']).to_tensor_7()
@@ -779,7 +746,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
         v_hat_mol = torch.clamp(v_hat_mol, min=-1000.0, max=1000.0) 
         
         # Calculate peptide positions 
-        # if self.variational:
         v_hat_mol_rot = v_hat_mol[:,:self.rot_dim].reshape(-1, 3, 3)
         v_hat_mol_quat = safe_rot_to_quat(v_hat_mol_rot)
         v_hat_mol_trans = v_hat_mol[:,self.rot_dim:self.rot_dim+self.x_dim]
@@ -796,7 +762,7 @@ class Flow_Matching_Model_all_atom(nn.Module):
             z_t_mol_quat = safe_rot_to_quat(z_t_mol['rot'].reshape(-1, 3, 3))
             v_hat_mol_quat = calc_quat_wt_qt_q1(z_t_mol_quat.reshape(batch_size, size_mol, 4), v_hat_mol_quat.reshape(batch_size, size_mol, 4)) 
             v_hat_mol_quat = v_hat_mol_quat / one_minus_t
-            v_hat_mol_quat = v_hat_mol_quat.reshape(-1, 3) # shape [B*N, 3]
+            v_hat_mol_quat = v_hat_mol_quat.reshape(-1, 3) 
 
             trans_hat_mol = v_hat_mol[:,self.rot_dim:self.rot_dim+self.x_dim].reshape(batch_size, size_mol, 3)
             v_hat_mol_trans = (trans_hat_mol - z_t_mol['trans']) / one_minus_t
@@ -810,11 +776,9 @@ class Flow_Matching_Model_all_atom(nn.Module):
             sin_diff = sin_1 * cos_t - cos_1 * sin_t
             cos_diff = cos_1 * cos_t + sin_1 * sin_t
 
-            # sin_diff = a_t[..., 0]*a_1[..., 1] - a_t[..., 1]*a_1[..., 0]
-            # cos_diff = a_t[..., 0]*a_1[..., 0] + a_t[..., 1]*a_1[..., 1]
             geodesic_distance = torch.atan2(sin_diff, cos_diff)
             v_hat_mol_angles = geodesic_distance / one_minus_t
-            v_hat_mol_angles = v_hat_mol_angles.reshape(-1, 7) # shape [B*N, 7]
+            v_hat_mol_angles = v_hat_mol_angles.reshape(-1, 7) 
         
         # Calculate rotation loss
         if self.variational:
@@ -826,19 +790,13 @@ class Flow_Matching_Model_all_atom(nn.Module):
             error_rot_geodesic = (rot_vec**2).sum(dim=-1)
             error_rot = scatter_mean(error_rot_geodesic, molecule["idx"], dim=0)
             rmse = torch.sqrt(error_rot)
-            print(f"Rotation RMSE: {rmse.mean():.4f}")
         else:
-            # print(f'{v_mol_quat.reshape(-1, 3)[0]=}')
-            # print(f'{v_hat_mol_quat[0]=}')
             error_rot = scatter_add(torch.sum(((v_mol_quat.reshape(-1, 3) - v_hat_mol_quat))**2, dim=-1), molecule['idx'], dim=0)
             rmse = torch.sqrt(error_rot / molecule['size'])
-            print(f"Rotation RMSE: {rmse.mean():.4f}")
         
         # Calculate position loss
         x_mol = molecule['x']
         x_hat_mol = x_hat_mol.reshape(-1, x_hat_mol.shape[-2], x_hat_mol.shape[-1])
-        # print(f'{x_mol[0]=}')
-        # print(f'{x_hat_mol[0]=}')
 
         atom14_exists = molecule["atom14_gt_exists"]
         x_alt_mol = molecule["atom14_alt_gt_positions"]
@@ -852,7 +810,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
         error_x = scatter_add(sse_per_res, molecule["idx"], dim=0)
         n_atoms_per_graph = scatter_add(n_atoms_per_res, molecule["idx"], dim=0)
         rmse_pos = torch.sqrt((error_x / n_atoms_per_graph) + 1e-6)
-        print(f"Position RMSE: {rmse_pos.mean()}")
 
         # Calculate FAPE loss
         T_peptide = Rigid.from_tensor_4x4(molecule['backbone_rigid_tensor']).to_tensor_7()
@@ -860,66 +817,27 @@ class Flow_Matching_Model_all_atom(nn.Module):
             fape_loss = _compute_fape_loss(v_hat_mol_quat, v_hat_mol_trans, T_peptide, molecule, protein_pocket, x_hat_mol, sidechain_frames)
         else:
             fape_loss = _compute_fape_loss(quat_hat_mol, trans_hat_mol, T_peptide, molecule, protein_pocket, x_hat_mol, sidechain_frames)
-        print(f"Backbone FAPE: {fape_loss['backbone'].mean()}")
-        print(f"Sidechain FAPE: {fape_loss['sidechain'].mean()}")
-        print(f"Total FAPE: {fape_loss['total'].mean()}")
 
         # Calculate translation loss
         x1_pos = v_mol_trans.reshape(-1, v_mol_trans.shape[-1])
         x1_pos = x1_pos.reshape(-1, x1_pos.shape[-1])
-        # print(f'{x1_pos[0:20]=}')
-        # print(f'{v_hat_mol_trans[0:20]=}')
         error_trans = scatter_add(torch.sum(((x1_pos - v_hat_mol_trans))**2, dim=-1), molecule['idx'], dim=0)
         rmse = torch.sqrt((error_trans / molecule['size']) + 1e-8)
-        print(f"Translation RMSE mean: {rmse.mean()}")
 
         # Calculate angle loss
         angles = molecule['torsion_angles_sin_cos']
         angles = angles.reshape(angles.shape[0], angles.shape[1], 7, 2)
-        # print(f'{angles[0,0]=}')
         if self.variational:
             angles_hat_mol = v_hat_mol_angles.reshape(angles.shape[0], angles.shape[1], angles.shape[2], angles.shape[3])
-        # print(f'{angles_hat_mol[0,0]=}')
         molecule['torsion_angles_mask'] = molecule['torsion_angles_mask'].reshape(angles.shape[0], angles.shape[1], angles.shape[2])
         molecule['alt_torsion_angles_sin_cos'] = molecule['alt_torsion_angles_sin_cos'].reshape(angles.shape[0], angles.shape[1], angles.shape[2], angles.shape[3])
         error_angles = _compute_torsion_angle_loss(angles_hat_mol, molecule['torsion_angles_mask'], angles, molecule['alt_torsion_angles_sin_cos'])
         rmse = torch.sqrt((error_angles / molecule['size']) + 1e-8)
-        print(f"Angles RMSE mean: {rmse.mean()}")
-
-        # save pdbs for first sample in batch
-        # if save_pdb and run_id is not None:
-        #     # Save noisy and predicted peptides for the first element in the batch
-        #     mol_single = molecule.copy()
-        #     mol_single['size'] = molecule['size'][:1]
-            
-        #     # 1. Save Predicted Peptide
-        #     self.safe_pdbs(x_hat_mol, mol_single, run_id, data_dir, time_step=f'epoch_{current_epoch}_predicted', atom_level=True, save_peptide_only=True)
-            
-        #     # 2. Save Noisy Peptide
-        #     # Extract rigid parameters and angles from z_t_mol
-        #     rotmats_t = z_t_mol[:, :, :9].reshape(-1, 3, 3)
-        #     quat_t = safe_rot_to_quat(rotmats_t)
-        #     quat_t = F.normalize(quat_t, dim=-1, eps=1e-6)
-        #     trans_t = z_t_mol[:, :, 9:12].reshape(-1, 3)
-        #     angles_t = z_t_mol[:, :, 12:26].reshape(-1, 14)
-        #     T_t = torch.cat([quat_t, trans_t], dim=-1)
-            
-        #     x_t_mol, _, _ = self.predict_pos(molecule, T_t, angles_t)
-        #     x_t_mol = x_t_mol.reshape(-1, x_t_mol.shape[-2], x_t_mol.shape[-1])
-        #     self.safe_pdbs(x_t_mol, mol_single, run_id, data_dir, time_step=f'epoch_{current_epoch}_noisy', atom_level=True, save_peptide_only=True)
-            
-        #     # 3. Save Ground Truth Peptide
-        #     self.safe_pdbs(molecule['x'], mol_single, run_id, data_dir, time_step=f'epoch_{current_epoch}_gt', atom_level=True, save_peptide_only=True)
-
 
         error_pro = torch.zeros(protein_pocket['size'].size(0), device=molecule['x'].device)
 
         # Loss part from MHC-Diff
         kl_prior = self.kl_prior(molecule)
-
-        # SNR_t = (1 / self.SNR_t(t).squeeze(1))
-
-        # t_0_mask = (t == 1).float().squeeze()
         t_0_mask = (t >= (1.0 - 1.0 / self.T)).float().squeeze()
         t_not_0_mask = 1 - t_0_mask
 
@@ -962,7 +880,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
             if x_hat_mol_violation.requires_grad:
                 x_hat_mol_violation.register_hook(lambda grad: torch.clamp(grad, -0.1, 0.1))
             violation_losses = _compute_cross_violation_loss(molecule, protein_pocket, x_hat_mol_violation)
-            print(f"Cross Violation Loss: {violation_losses['total'].mean()}, weight: {violation_weight:.4f}")
         else:
             violation_losses = {'total': torch.tensor(0.0, device=molecule['x'].device)}
 
@@ -1007,21 +924,29 @@ class Flow_Matching_Model_all_atom(nn.Module):
             t, ba_hat, current_epoch=None, max_epochs=None,
             run_id=None, data_dir=None, save_pdb=False
     ):
-        print(' ')
         batch_size = len(molecule['affinity'])
         size_mol = molecule['size'][0]
 
         if self.ba:
             ba = molecule['affinity']
             ba_hat = ba_hat.squeeze(-1)
-            error_ba = torch.mean((ba - ba_hat) ** 2, dim=-1)
-            print(f"BA RMSE mean: {torch.sqrt(error_ba.mean())}")
 
-            affinity_loss = _regression_loss_function(ba_hat.float(), ba.float())
-            print(f"BA Loss: {affinity_loss.mean()}")
+            # Compute the full affinity loss and error
+            full_affinity_loss = _regression_loss_function(ba_hat.float(), ba.float())
+            full_error_ba = (ba - ba_hat) ** 2
+
+            # Mask out X-ray samples (which have dummy affinity=1.0)
+            ba_mask = molecule.get('ba_mask', None)
+            if ba_mask is not None:
+                # Zero out loss and error for non-BA samples
+                affinity_loss = full_affinity_loss * ba_mask.float()
+                error_ba = full_error_ba * ba_mask.float()
+            else:
+                affinity_loss = full_affinity_loss
+                error_ba = full_error_ba
         else:
-            error_ba = 0
-            affinity_loss = 0
+            error_ba = torch.tensor(0.0, device=molecule['x'].device)
+            affinity_loss = torch.tensor(0.0, device=molecule['x'].device)
 
         if self.variational:
             T_peptide = Rigid.from_tensor_4x4(molecule['backbone_rigid_tensor']).to_tensor_7()
@@ -1035,7 +960,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
             v_mol_angles = v_mol['angles'] # shape [B*N, 7]
     
         # Calculate peptide positions 
-        # if self.variational:
         v_hat_mol_rot = v_hat_mol[:,:self.rot_dim].reshape(-1, 3, 3) # shape [B*N, 3, 3]
         v_hat_mol_quat = safe_rot_to_quat(v_hat_mol_rot) # shape [B*N, 4]
         v_hat_mol_trans = v_hat_mol[:,self.rot_dim:self.rot_dim+self.x_dim] # shape [B*N, 3]
@@ -1065,8 +989,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
             sin_diff = sin_1 * cos_t - cos_1 * sin_t
             cos_diff = cos_1 * cos_t + sin_1 * sin_t
 
-            # sin_diff = a_t[..., 0]*a_1[..., 1] - a_t[..., 1]*a_1[..., 0]
-            # cos_diff = a_t[..., 0]*a_1[..., 0] + a_t[..., 1]*a_1[..., 1]
             geodesic_distance = torch.atan2(sin_diff, cos_diff)
             v_hat_mol_angles = geodesic_distance / one_minus_t
             v_hat_mol_angles = v_hat_mol_angles.reshape(-1, 7) # shape [B*N, 7]
@@ -1081,12 +1003,9 @@ class Flow_Matching_Model_all_atom(nn.Module):
             error_rot_geodesic = (rot_vec**2).sum(dim=-1)
             error_rot = scatter_mean(error_rot_geodesic, molecule["idx"], dim=0)
             rmse = torch.sqrt(error_rot)
-            print(f"Rotation RMSE: {rmse.mean():.4f}")
         else:
             error_rot = scatter_add(torch.sum(((v_mol_quat.reshape(-1, 3) - v_hat_mol_quat))**2, dim=-1), molecule['idx'], dim=0)
-            rmse = torch.sqrt(error_rot / molecule['size'])
-            print(f"Rotation RMSE: {rmse.mean():.4f}")
-        
+            rmse = torch.sqrt(error_rot / molecule['size'])        
         
         if self.position_encoding:
             molecule_pos = molecule['pos_in_seq']
@@ -1109,7 +1028,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
         error_x = scatter_add(sse_per_res, molecule["idx"], dim=0)
         n_atoms_per_graph = scatter_add(n_atoms_per_res, molecule["idx"], dim=0)
         rmse_pos = torch.sqrt(error_x / n_atoms_per_graph)
-        print(f"Position RMSE: {rmse_pos.mean()}")
 
         # Calculate FAPE loss
         T_peptide = Rigid.from_tensor_4x4(molecule['backbone_rigid_tensor']).to_tensor_7()
@@ -1117,19 +1035,12 @@ class Flow_Matching_Model_all_atom(nn.Module):
             fape_loss = _compute_fape_loss(v_hat_mol_quat, v_hat_mol_trans, T_peptide, molecule, protein_pocket, x_hat_mol, sidechain_frames)
         else:
             fape_loss = _compute_fape_loss(quat_hat_mol, trans_hat_mol, T_peptide, molecule, protein_pocket, x_hat_mol, sidechain_frames)
-        print(f"Backbone FAPE: {fape_loss['backbone'].mean()}")
-        print(f"Sidechain FAPE: {fape_loss['sidechain'].mean()}")
-        print(f"Total FAPE: {fape_loss['total'].mean()}")
 
         # Calculate translation loss
         v_mol_trans = v_mol_trans.reshape(-1, v_mol_trans.shape[-1])
         v_hat_mol_trans = v_hat_mol_trans.reshape(-1, v_hat_mol_trans.shape[-1])
-        # translation_loss_weight = 2.0
-        # trans_scale = 0.1
-        # error_trans = scatter_add(torch.sum(((x1_pos - v_hat_mol_pos) * trans_scale)**2, dim=-1), molecule['idx'], dim=0) * translation_loss_weight
         error_trans = scatter_add(torch.sum(((v_mol_trans - v_hat_mol_trans))**2, dim=-1), molecule['idx'], dim=0)
         rmse = torch.sqrt(error_trans / molecule['size'])
-        print(f"Translation RMSE mean: {rmse.mean()}")
 
         # Calculate angles loss
         angles = molecule['torsion_angles_sin_cos']
@@ -1140,7 +1051,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
         molecule['alt_torsion_angles_sin_cos'] = molecule['alt_torsion_angles_sin_cos'].reshape(angles.shape[0], angles.shape[1], angles.shape[2], angles.shape[3])
         error_angles = _compute_torsion_angle_loss(angles_hat_mol, molecule['torsion_angles_mask'], angles, molecule['alt_torsion_angles_sin_cos'])
         rmse = torch.sqrt(error_angles / molecule['size'])
-        print(f"Angles RMSE mean: {rmse.mean()}")
 
         error_pro = torch.zeros(protein_pocket['size'].size(0), device=molecule['x'].device)
 
@@ -1212,17 +1122,10 @@ class Flow_Matching_Model_all_atom(nn.Module):
             if x_hat_mol_violation.requires_grad:
                 x_hat_mol_violation.register_hook(lambda grad: torch.clamp(grad, -0.1, 0.1))
             violation_losses = _compute_cross_violation_loss(molecule, protein_pocket, x_hat_mol_violation)
-            print(f"Cross Violation Loss: {violation_losses['total'].mean()}, weight: {violation_weight:.4f}")
         else:
             violation_losses = {'total': torch.tensor(0.0, device=molecule['x'].device)}
 
-        # loss = fape_loss["total"] + affinity_loss + error_angles + violation_weight * violation_losses["total"] #+ (error_trans / molecule['size']) + 10.0 * error_quat
-        # Two added loss terms for vlb
-        # loss = loss_t + loss_0 + kl_prior - delta_log_px - log_pN #+ error_quat + error_trans + error_angles + error_ba
-        # loss += fape_loss["total"] + affinity_loss + error_angles + violation_weight * violation_losses["total"]
-        # loss = loss_t + kl_prior
         loss = fape_loss["total"] + affinity_loss + error_angles + error_rot + 0.01 * loss_t + 0.01 * loss_0 + kl_prior + 0.01 * violation_weight * violation_losses["total"]
-
 
         info = {
             'loss_t': loss_t.mean(0),
@@ -1305,32 +1208,16 @@ class Flow_Matching_Model_all_atom(nn.Module):
         T_peptide = T_peptide.reshape(-1, T_peptide.shape[-1])
         T_peptide = T_peptide[:, 4:7]
 
-        T_normalized = torch.ones((len(molecule['size']), 1), device=device)
-        # alpha_T = self.noise_schedule(T_normalized, 'alpha')
-        # sigma_T = self.noise_schedule(T_normalized, 'sigma')
-        # sigma_T_value = sigma_T[0,0].item()
+        T_normalized = torch.ones((len(molecule['size']), 1), device=device) 
         alpha_T = 0.0  # At t=1, (1-t) is 0
         sigma_T_val = 1.0
 
-        # mu_x_mol = molecule['x'] * alpha_T[molecule['idx']] # [:,3]
-        # mu_x_mol = molecule['x'] * alpha_T # [:,3]
-        mu_x_mol = T_peptide * alpha_T # [:,3]
-        # mu_x_mol = T_peptide_pos * alpha_T # [:,3]
-        # mu_h_mol = molecule['h'] * alpha_T[molecule['idx']] # [:,20]
+        mu_x_mol = T_peptide * alpha_T
         
-        # sigma_T_x = torch.full(alpha_T.shape, fill_value=sigma_T_value, device=device).squeeze() # [64,1]
-        # sigma_T_h = torch.full(alpha_T.shape, fill_value=sigma_T_value, device=device).squeeze() # [64,1]
-        # sigma_T_x = torch.full((len(molecule['size']),), fill_value=sigma_T_val * self.noise_scaling, device=device)
         sigma_T_x = torch.full((len(molecule['size']),), fill_value=sigma_T_val, device=device)
-        # sigma_T_h = torch.full((len(molecule['size']),), fill_value=sigma_T_val, device=device)
-
 
         # KL computation h (if features are diffused)
         kl_h = 0
-        # zeros = torch.zeros_like(mu_h_mol)
-        # ones = torch.ones_like(sigma_T_h)
-        # mu_norm2 = scatter_add(torch.sum((mu_h_mol - zeros) ** 2, dim=1), molecule['idx'], dim=0)
-        # kl_h = torch.log(ones / sigma_T_h) + 0.5 * (sigma_T_h**2 + mu_norm2) / (ones**2) - 0.5
 
         # KL computation x
         zeros = torch.zeros_like(mu_x_mol)
@@ -1359,28 +1246,12 @@ class Flow_Matching_Model_all_atom(nn.Module):
     
     def neg_log_const(self, num_nodes, batch_size, device):
 
-        # t0 = torch.zeros((batch_size, 1), device=device)
-        # log_sigma_0 = torch.log(self.noise_schedule(t0, 'sigma')).view(batch_size)
-
-        # neg_log_const = - ((num_nodes - 1) * self.x_dim) * (- log_sigma_0 - 0.5 * np.log(2 * np.pi))
-
-        # return neg_log_const
         return torch.zeros(batch_size, device=device)
     
     def SNR_s_t(self, t):
 
-        # 1. Define previous timestep s
         s = torch.clamp(torch.round(t * self.T).long() - 1, min=0)
         s = s / self.T
-
-        # 2. In Flow Matching: x_t = (1-t)x_0 + t*x_1
-        # Effective alpha (signal weight) is (1-t)
-        # Effective sigma (noise weight) is t
-        # alpha2_t = (1.0 - t)**2
-        # alpha2_s = (1.0 - s)**2
-        
-        # sigma2_t = t**2
-        # sigma2_s = s**2
 
         alpha2_t = t**2
         alpha2_s = s**2
@@ -1388,13 +1259,10 @@ class Flow_Matching_Model_all_atom(nn.Module):
         sigma2_t = (1.0 - t)**2
         sigma2_s = (1.0 - s)**2
 
-        # 3. Compute SNR as the ratio of signal-to-noise ratios
-        # Adding epsilon to avoid division by zero at t=0
         eps = 1e-8
         snr_t = alpha2_t / (sigma2_t + eps)
         snr_s = alpha2_s / (sigma2_s + eps)
 
-        # This represents the "step-wise" change in SNR
         SNR_s_t = snr_s / (snr_t + eps)
 
         return SNR_s_t
@@ -1447,16 +1315,13 @@ class Flow_Matching_Model_all_atom(nn.Module):
 
     def torsion_angles_to_frames(self, T, alpha, aatype):
 
-        # Lazily initialize the residue constants on the correct device
         self._init_residue_constants(alpha.dtype, alpha.device)
 
-        # Separated purely to make testing less annoying
         return torsion_angles_to_frames(T, alpha, aatype, self.default_frames)
 
     def frames_and_literature_positions_to_atom14_pos(
         self, T, aatype  # [*, N, 8]  # [*, N]
     ):
-        # Lazily initialize the residue constants on the correct device
         T_rots = T.get_rots()
         self._init_residue_constants(T_rots.dtype, T_rots.device)
 
@@ -1539,25 +1404,8 @@ class Flow_Matching_Model_all_atom(nn.Module):
 
         return torch.cat([omega_sin[..., None], omega_cos[..., None]], dim=-1)
 
-    # def compute_ba(self, peptide_embd, peptide_mask):
-
-
-    #     # [*, peptide_maxlen, output_size]
-    #     peptide_scores = self.ba_module(peptide_embd)
-
-    #     peptide_mask = peptide_mask.to(bool)
-
-    #     # [*, peptide_maxlen, output_size]
-    #     masked_scores = torch.where(peptide_mask.unsqueeze(-1), peptide_scores, 0.0)
-
-    #     # [*, output_size]
-    #     ba = masked_scores.sum(dim=-2)
-
-    #     return ba
-    
-
     @torch.no_grad()
-    def sample_structure(self, num_samples, molecule, protein_pocket, sampling_without_noise, data_dir, run_id, save_trajectory=False):
+    def sample_structure(self, num_samples, molecule, protein_pocket, sampling_without_noise, data_dir, run_id, save_trajectory=False, fold=None, save_scores=False):
         
         device = molecule['x'].device
         num_graphs = molecule['size'].size(0)
@@ -1633,11 +1481,82 @@ class Flow_Matching_Model_all_atom(nn.Module):
         T_peptide = Rigid.from_tensor_4x4(peptide_backbone_rigid_tensor)
         T_peptide = T_peptide.to_tensor_7()
 
-        print('using solver', self.solver)
         if self.solver == "loop":
 
             steps = self.T // self.sampling_stepsize
             dt = 1.0 / steps
+
+            # Save initial noise state (t=0) for trajectory
+            save_trajectory = False
+            if save_trajectory:
+                sample_batch_size_traj = num_graphs // num_samples
+                num_to_save_traj = min(10, sample_batch_size_traj)
+
+                rot_0 = current_xh_mol[:, :self.rot_dim].reshape(-1, 3, 3)
+                U_0, S_0, V_0 = torch.svd(rot_0)
+                rot_0_proj = torch.matmul(U_0, V_0.transpose(-2, -1))
+                det_0 = torch.det(rot_0_proj)
+                V_det_0 = V_0.clone()
+                V_det_0[:, :, 2] *= det_0.view(-1, 1)
+                rot_0 = torch.matmul(U_0, V_det_0.transpose(-2, -1))
+
+                quat_0 = safe_rot_to_quat(rot_0)
+                quat_0 = F.normalize(quat_0, dim=-1, eps=1e-6)
+                trans_0 = current_xh_mol[:, self.rot_dim:self.rot_dim+self.x_dim]
+                angles_0 = current_xh_mol[:, self.rot_dim+self.x_dim:self.rot_dim+self.x_dim+self.angle_dim]
+                angles_0 = angles_0.view(-1, 7, 2)
+                angles_0 = F.normalize(angles_0, dim=-1, eps=1e-6)
+                if 'torsion_angles_mask' in molecule:
+                    mask_0 = molecule['torsion_angles_mask'].view(-1, 7, 1)
+                    angles_0 = angles_0 * mask_0
+                angles_0 = angles_0.view(-1, 14)
+
+                T_0 = torch.cat((quat_0, trans_0), dim=-1)
+                x_0, _, _ = self.predict_pos(molecule, T_0, angles_0)
+                x_0 = x_0.reshape(-1, 3)
+
+                save_trajectory = False
+                if save_trajectory:
+                    traj_dir = Path('results') / 'trajectories' / run_id
+                    traj_dir.mkdir(parents=True, exist_ok=True)
+
+                    from utils import write_updated_peptide_coords_pdb_swiftmhc
+                    traj_ref_data = {}
+                    traj_gnames = {}
+                    idx_14_traj = molecule['idx'].repeat_interleave(14)
+                    
+                    indices_to_save_traj = list(range(num_to_save_traj))
+                    for j in range(molecule['idx'].max().item() + 1):
+                        gname = molecule['graph_name'] if isinstance(molecule['graph_name'], str) else molecule['graph_name'][j]
+                        if isinstance(gname, bytes):
+                            gname = gname.decode('utf-8')
+                        if '2GTW' in gname and j not in indices_to_save_traj:
+                            indices_to_save_traj.append(j)
+
+                    for j_traj in indices_to_save_traj:
+                        if isinstance(molecule['graph_name'], str):
+                            gname = molecule['graph_name']
+                        else:
+                            gname = molecule['graph_name'][j_traj]
+                        if isinstance(gname, bytes):
+                            gname = gname.decode('utf-8')
+                        traj_gnames[j_traj] = gname
+                        protein_data, peptide_data = self._get_ref_data(gname, data_dir, fold)
+                        traj_ref_data[j_traj] = (protein_data, peptide_data)
+
+                    for j_traj in indices_to_save_traj:
+                        graph_idx_traj = j_traj
+                        gname = traj_gnames[j_traj]
+                        peptide_pos_0 = x_0[idx_14_traj == graph_idx_traj]
+                        pdb_path = str(traj_dir / f"{gname}_{graph_idx_traj}_t000.pdb")
+                        protein_data, peptide_data = traj_ref_data[j_traj]
+                        write_updated_peptide_coords_pdb_swiftmhc(
+                            peptide_coords=peptide_pos_0, peptide_data=peptide_data,
+                            protein_data=protein_data, pdb_output_path=pdb_path,
+                            atom_level=True, save_peptide_only=False
+                        )
+
+                    print(f"Saving trajectory for {len(indices_to_save_traj)} structures across {steps} timesteps...")
 
             for k in range(steps):
                 t_val = k / steps
@@ -1688,6 +1607,48 @@ class Flow_Matching_Model_all_atom(nn.Module):
 
                 current_xh_mol = torch.cat((current_rot_mol, current_trans_mol, current_angle_mol, current_h_mol), dim=-1)
 
+                # Save intermediate trajectory for the save_scores structures
+                if save_trajectory:
+                    sample_batch_size_traj = num_graphs // num_samples
+                    num_to_save_traj = min(5, sample_batch_size_traj)
+
+                    # Convert intermediate state to atom positions
+                    rot_k = current_xh_mol[:, :self.rot_dim].reshape(-1, 3, 3)
+                    U_k, S_k, V_k = torch.svd(rot_k)
+                    rot_k_proj = torch.matmul(U_k, V_k.transpose(-2, -1))
+                    det_k = torch.det(rot_k_proj)
+                    V_det_k = V_k.clone()
+                    V_det_k[:, :, 2] *= det_k.view(-1, 1)
+                    rot_k = torch.matmul(U_k, V_det_k.transpose(-2, -1))
+
+                    quat_k = safe_rot_to_quat(rot_k)
+                    quat_k = F.normalize(quat_k, dim=-1, eps=1e-6)
+                    trans_k = current_xh_mol[:, self.rot_dim:self.rot_dim+self.x_dim]
+                    angles_k = current_xh_mol[:, self.rot_dim+self.x_dim:self.rot_dim+self.x_dim+self.angle_dim]
+                    angles_k = angles_k.view(-1, 7, 2)
+                    angles_k = F.normalize(angles_k, dim=-1, eps=1e-6)
+                    if 'torsion_angles_mask' in molecule:
+                        mask_k = molecule['torsion_angles_mask'].view(-1, 7, 1)
+                        angles_k = angles_k * mask_k
+                    angles_k = angles_k.view(-1, 14)
+
+                    T_k = torch.cat((quat_k, trans_k), dim=-1)
+                    x_k, _, _ = self.predict_pos(molecule, T_k, angles_k)
+                    x_k = x_k.reshape(-1, 3)
+
+                    # Save PDBs for first sample (sample 0) of each of the saved structures
+                    for j_traj in indices_to_save_traj:
+                        graph_idx_traj = j_traj
+                        gname = traj_gnames[j_traj]
+                        peptide_pos_k = x_k[idx_14_traj == graph_idx_traj]
+                        pdb_path = str(traj_dir / f"{gname}_{graph_idx_traj}_t{k+1:03d}.pdb")
+                        protein_data, peptide_data = traj_ref_data[j_traj]
+                        write_updated_peptide_coords_pdb_swiftmhc(
+                            peptide_coords=peptide_pos_k, peptide_data=peptide_data,
+                            protein_data=protein_data, pdb_output_path=pdb_path,
+                            atom_level=True, save_peptide_only=False
+                        )
+
         elif self.solver in ("euler", "rk4"):
 
             ode_func = ODEWrapper(
@@ -1708,52 +1669,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
                 method=self.solver, 
                 options={'step_size': 1.0 / self.T} 
             )
-
-            if save_trajectory:
-                print(f"Saving trajectory for 3 peptides, {num_samples} samples each...")
-                
-                sample_batch_size = molecule['size'].size(0) // num_samples
-                
-                for t_idx in range(len(t_span)):
-                    xh_t = trajectory[t_idx]
-                    
-                    # Extract and process as in the final step
-                    rot_t = xh_t[:, :self.rot_dim].reshape(-1, 3, 3)
-                    
-                    # Project to SO(3)
-                    U, S, V = torch.svd(rot_t)
-                    rot_t_projected = torch.matmul(U, V.transpose(-2, -1))
-                    det = torch.det(rot_t_projected)
-                    V_det = V.clone()
-                    V_det[:, :, 2] *= det.view(-1, 1)
-                    rot_t = torch.matmul(U, V_det.transpose(-2, -1))
-                    
-                    quat_t = safe_rot_to_quat(rot_t)
-                    quat_t = F.normalize(quat_t, dim=-1, eps=1e-6)
-                    trans_t = xh_t[:, self.rot_dim:self.rot_dim+self.x_dim]
-                    angles_t = xh_t[:, self.rot_dim+self.x_dim:self.rot_dim+self.x_dim+self.angle_dim]
-                    
-                    angles_t = angles_t.view(-1, 7, 2)
-                    angles_t = F.normalize(angles_t, dim=-1, eps=1e-6)
-                    if 'torsion_angles_mask' in molecule:
-                        mask = molecule['torsion_angles_mask'].view(-1, 7, 1)
-                        angles_t = angles_t * mask
-                    angles_t = angles_t.view(-1, 14)
-                    
-                    T_hat_t = torch.cat((quat_t, trans_t), dim=-1)
-                    x_hat_t, _, _ = self.predict_pos(molecule, T_hat_t, angles_t)
-                    x_hat_t = x_hat_t.reshape(-1, 3)
-                    
-                    # Only save for the first 3 peptides across all samples
-                    # Create a mask for the first 3 peptides
-                    save_mask = torch.zeros(molecule['size'].size(0), dtype=torch.bool, device=device)
-                    for s in range(num_samples):
-                        for j in range(min(3, sample_batch_size)):
-                            save_mask[s * sample_batch_size + j] = True
-                    
-                    # We use a specialized trajectory saver
-                    self.save_trajectory_step(x_hat_t, molecule, run_id, t_idx, num_samples, save_mask, data_dir)
-
 
             current_xh_mol = trajectory[-1]
             c_s = ode_func.last_c_s
@@ -1794,13 +1709,6 @@ class Flow_Matching_Model_all_atom(nn.Module):
 
         h_pro_final = h_pro_final.unsqueeze(1).expand(-1, x_pro_final.shape[1], -1)
         xh_pro_final = torch.cat([x_pro_final, h_pro_final], dim=-1)
-
-        print(f"quat_true: {T_peptide[0, 0, :4]}")
-        print(f"quat_hat: {quat_hat[0]}")
-        print(f"trans_true: {T_peptide[0, 0, 4:]}")
-        print(f"trans_hat: {trans_hat[0]}")
-        print(f"angles_true: {molecule['torsion_angles_sin_cos'][0][0]}")
-        print(f"angles_hat: {angles_hat[0].view(7, 2)}")
 
         # Calculate final position of peptide from predicted rotaiton, translation and angles
         x_hat_mol, angles_hat, sidechain_frames = self.predict_pos(molecule, T_peptide_hat, angles_hat)
@@ -1881,23 +1789,64 @@ class Flow_Matching_Model_all_atom(nn.Module):
         t_after_ba = time.time()
         ba_time = t_after_ba - t_before_ba
         
-        print(f"ba_hat: {ba_hat[0]}")
         ba_true = molecule['affinity']
-        print(f"ba_true: {ba_true[0]}")
         ba = {"ba_hat": ba_hat, "ba_true": ba_true, "ba_true_struct": ba_true_struct, "ba_time": ba_time}
 
-        self.safe_pdbs(xh_mol_final, molecule, run_id, data_dir, time_step='F', atom_level=True, save_peptide_only=True)
-        self.safe_pdbs(molecule['x'].reshape(-1, 3), molecule, run_id, data_dir, time_step='GT', atom_level=True, save_peptide_only=True)
-        
-        if 'backbone_rigid_tensor' in molecule and molecule['backbone_rigid_tensor'] is not None:
-            T_peptide_true = Rigid.from_tensor_4x4(molecule['backbone_rigid_tensor']).to_tensor_7()
-            angles_true = molecule['torsion_angles_sin_cos']
-            x_true_recon, _, _ = self.predict_pos(molecule, T_peptide_true, angles_true)
-            self.safe_pdbs(x_true_recon.reshape(-1, 3), molecule, run_id, data_dir, time_step='RECON', atom_level=True, save_peptide_only=True)
+        self.safe_pdbs(xh_mol_final, molecule, run_id, data_dir, time_step='F', atom_level=True, save_peptide_only=True, fold=fold)
+        # self.safe_pdbs(molecule['x'].reshape(-1, 3), molecule, run_id, data_dir, time_step='GT', atom_level=True, save_peptide_only=False, fold=fold)
+    
+        # Save per-sample RMSE scores and PDB filenames for the first 5 input structures
+        save_scores = False
+        if save_scores:
+            sample_batch_size = num_graphs // num_samples
+            num_to_save = min(5, sample_batch_size)
+
+            # Compute per-graph all-atom RMSE between predicted and ground truth
+            x_pred_flat = xh_mol_final[:, :3]  # [total_residues * 14, 3]
+            x_true_flat = molecule['x'].reshape(-1, 3)  # [total_residues * 14, 3]
+            idx_14 = molecule['idx'].repeat_interleave(14)
+            sq_err_per_atom = torch.sum((x_pred_flat - x_true_flat) ** 2, dim=-1)
+            sse_per_graph = scatter_add(sq_err_per_atom, idx_14, dim=0)  # [num_graphs]
+            n_atoms_per_graph = scatter_add(torch.ones_like(sq_err_per_atom), idx_14, dim=0)
+            rmse_per_graph = torch.sqrt(sse_per_graph / n_atoms_per_graph.clamp_min(1.0))  # [num_graphs]
+
+            # Compute per-graph CA-only RMSE (CA is atom index 1 in the 14-atom representation)
+            ca_mask = torch.zeros(x_pred_flat.shape[0], dtype=torch.bool, device=device)
+            ca_mask[1::14] = True  # every 14th element starting at offset 1
+            x_pred_ca = x_pred_flat[ca_mask]  # [total_residues, 3]
+            x_true_ca = x_true_flat[ca_mask]  # [total_residues, 3]
+            sq_err_ca = torch.sum((x_pred_ca - x_true_ca) ** 2, dim=-1)  # [total_residues]
+            sse_ca_per_graph = scatter_add(sq_err_ca, molecule['idx'], dim=0)  # [num_graphs]
+            n_ca_per_graph = scatter_add(torch.ones_like(sq_err_ca), molecule['idx'], dim=0)
+            rmse_ca_per_graph = torch.sqrt(sse_ca_per_graph / n_ca_per_graph.clamp_min(1.0))  # [num_graphs]
+
+            scores_dir = Path('results') / 'scores'
+            scores_dir.mkdir(parents=True, exist_ok=True)
+            scores_path = scores_dir / f'{run_id}_sample_scores.csv'
+
+            with open(scores_path, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['input_structure', 'sample_index', 'pdb_filename', 'rmse', 'rmse_ca'])
+
+                for j in range(num_to_save):
+                    # Get the input structure name (all samples share the same graph_name)
+                    if isinstance(molecule['graph_name'], str):
+                        input_name = molecule['graph_name']
+                    else:
+                        input_name = molecule['graph_name'][j]
+
+                    for s in range(num_samples):
+                        graph_idx = j * num_samples + s
+                        pdb_filename = f"{input_name}_F_{graph_idx}.pdb"
+                        rmse_val = rmse_per_graph[graph_idx].item()
+                        rmse_ca_val = rmse_ca_per_graph[graph_idx].item()
+                        writer.writerow([input_name, s, pdb_filename, f'{rmse_val:.6f}', f'{rmse_ca_val:.6f}'])
+
+            print(f"Saved RMSE scores for {num_to_save} structures to {scores_path}")
 
         return (xh_mol_final, xh_pro_final, c_s, ba)
     
-    def safe_pdbs(self, pos, molecule, run_id, data_dir, time_step, atom_level=False, save_peptide_only=False):
+    def safe_pdbs(self, pos, molecule, run_id, data_dir, time_step, atom_level=False, save_peptide_only=False, fold=None):
         # Ensure we only have the first 3 dimensions (x, y, z)
         pos = pos[..., :3]
         
@@ -1923,9 +1872,9 @@ class Flow_Matching_Model_all_atom(nn.Module):
             if '100K' in data_dir:
                 create_new_pdb_hdf5_100k(peptide_pos, peptide_idx, graph_name, run_id, data_dir, time_step=time_step, sample_id=i, atom_level=atom_level)
             else:
-                create_new_pdb_hdf5_swift(peptide_pos, peptide_idx, graph_name, run_id, data_dir, time_step=time_step, sample_id=i, atom_level=atom_level, save_peptide_only=save_peptide_only)
+                create_new_pdb_hdf5_swift(peptide_pos, peptide_idx, graph_name, run_id, data_dir, time_step=time_step, sample_id=i, atom_level=atom_level, save_peptide_only=save_peptide_only, fold=fold)
 
-    def save_trajectory_step(self, pos, molecule, run_id, t_idx, num_samples, mask, data_dir):
+    def save_trajectory_step(self, pos, molecule, run_id, t_idx, num_samples, mask, data_dir, fold):
         # Format: sampleID_structureID_timestep.pdb
         # sampleID = graph_name (peptide ID)
         # structureID = s (0-9)
@@ -1977,17 +1926,42 @@ class Flow_Matching_Model_all_atom(nn.Module):
                 save_peptide_only=False  # Save full pMHC complex (protein + peptide)
             )
 
-    def _get_ref_data(self, graph_name, data_dir):
+    def _get_ref_data(self, graph_name, data_dir, fold="1"):
         # Helper to get reference protein/peptide data from HDF5
         import h5py
-        fold = "1" # Hardcoded as in utils
-        possible_files = [
-            Path(data_dir) / f"BA_cluster{fold}.hdf5",
-            Path(data_dir) / f"train_fold{fold}.hdf5",
-            Path(data_dir) / f"valid_fold{fold}.hdf5",
-        ]
-        for i in range(10):
-            possible_files.append(Path(data_dir) / f"xray_cluster{i}.hdf5")
+
+        # possible_files = [
+        #     Path(data_dir) / f"BA_cluster{fold}.hdf5",
+        #     Path(data_dir) / f"train_fold{fold}.hdf5",
+        #     Path(data_dir) / f"valid_fold{fold}.hdf5",
+        # ]
+        file_idx = int(fold) - 1
+
+        xray_test_cluster = {
+            "1": 0,
+            "2": 1,
+            "3": 2,
+            "4": 3,
+            "5": 4,
+            "6": 5,
+            "7": 6,
+            "8": 7,
+            "9": 8,
+            "10": 9,
+        }
+
+        if graph_name.startswith("BA-"):
+            possible_files = [
+                Path(data_dir) / f"BA_cluster{file_idx}.hdf5",
+            ]
+        else:
+            possible_files = [
+                Path(data_dir)
+                / f"xray_cluster{xray_test_cluster[str(fold)]}.hdf5"
+            ]
+
+        # for i in range(10):
+        #     possible_files.append(Path(data_dir) / f"xray_cluster{i}.hdf5")
             
         for p in possible_files:
             if p.exists():
@@ -2046,12 +2020,9 @@ class ODEWrapper(nn.Module):
             scaling = 10
             v_x_rot = (v_x[:, :self.rot_dim] - xh_mol[:, :self.rot_dim]) * scale
             
-            # Not correct
             v_x_angle = (v_x[:, self.rot_dim+self.x_dim:self.rot_dim+self.x_dim+self.angle_dim] - xh_mol[:, self.rot_dim+self.x_dim:self.rot_dim+self.x_dim+self.angle_dim]) * scale
 
             v_x = torch.cat([v_x_rot, v_x_trans, v_x_angle], dim=-1)
-
-        # v_x = v_x - scatter_mean(v_x, self.molecule_idx, dim=0)[self.molecule_idx] # TODO: com handling testing?
         
         v_xh_final[:, :self.rot_dim+self.x_dim+self.angle_dim] = v_x
         

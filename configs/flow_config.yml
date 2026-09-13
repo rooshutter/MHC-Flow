@@ -1,10 +1,10 @@
 # Logging Traing only
-logdir: "./checkpoints/fold_1_flow_t_50_e_100_bs16_mp_hd32_ba_egnn_rot" 
+logdir: "./checkpoints/fold_1_flow_e_100" 
 project: 'Structur_prediction_Experiments'
-run_name: 'pmhc_8K_xray_fm_t_50_e_100_bs16_mp_hd32_ba_egnn_rot'
+run_name: 'pmhc_8K_xray_fm_e_100'
 entity: 'roos-hutter-university-of-amsterdam' #'neuro-ai-scientist'
 
-resume: False #"./checkpoints/fold_1_flow_t_50_e_100_loss8/checkpoints/best-model-epoch=epoch=91.ckpt"
+resume: False 
 
 # Training
 num_epochs: 100 #1000 # TODO: early stopping?? -> prevent overfitting
@@ -15,25 +15,26 @@ batch_size: 16
 lr: 2.0e-4 
 num_workers: 4
 all_atom: True
-wandb_log: True
+wandb_log: False
 variational: True
 solver: "loop"
 ba: True
 use_quat: False
-
+ 
 # Task
 task_params:
   features_fixed: True
   confidence_score: False
 
 # Dataset
-data_dir: '/scratch-shared/roos/preprocessed/' # for all atom
-# data_dir: "/home/rhutter/MHC-Diff/data/pmhc_xray_8K_aligned/"  # for only alpha carbon
+data_dir: '/scratch-shared/roos/preprocessed/' 
+# data_dir: "/home/rhutter/MHC-Diff/data/pmhc_xray_8K_aligned/"
 dataset: 'pmhc_8K_xray'
 dataset_params:
   num_atoms: 20
   num_residues: 20
   norm_values: [1,1]
+  fold: "1"
 
 generative_model: 'flow_matching_all_atom' # for all atom non variational
 # generative_model: 'flow_matching'  # for only alpha carbon
@@ -43,7 +44,7 @@ generative_model_params:
   position_encoding_dim: 10
   com_handling: 'peptide' # 'protein' 'both' 'peptide' 'no_COM'
   sampling_stepsize: 1
-  noise_scaling: null #1.0e-3 #null
+  noise_scaling: null 
   high_noise_training: False
 
 
@@ -61,20 +62,20 @@ network_params:
   edge_cutoff_interaction: 20.0
   # egnn specific
   attention: True
-  tanh: False # roos
+  tanh: False 
   norm_constant: 1
   inv_sublayers: 1
   sin_embedding: True
-  normalization_factor: 1.0 # roos
-  aggregation_method: 'sum' # roos
+  normalization_factor: 1.0 
+  aggregation_method: 'sum' 
   reflection_equivariant: False
 
-# Eval
-checkpoint: './checkpoints/fold_1_flow_t_50_e_100_bs16_mp_hd32_ba_egnn_rot/checkpoints/last.ckpt' 
+# Eval 
+checkpoint: './checkpoints/fold_1_flow_2/checkpoints/last.ckpt' 
 num_samples: 10
 sample_batch_size: 10
 sampling_without_noise: False
-sample_savepath: './results/rmse_values/flow/fold_1_flow_t_50_e_100_bs16_mp_hd32_ba_egnn_rot/samples_test'
+sample_savepath: './results/rmse_values/flow/fold_1_flow_2/samples_test'
 
 
 

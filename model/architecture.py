@@ -181,19 +181,11 @@ class NN_Model(nn.Module):
             z_t_pro_angles = torch.zeros_like(z_t_pro.reshape(-1, z_t_pro.shape[-1])[:, self.rot_dim+self.x_dim:self.rot_dim+self.x_dim+self.angle_dim])
             angles = torch.cat((z_t_mol_angles, z_t_pro_angles), dim=0)
 
-            # rot2 = rot.reshape(-1, 3, 3)
-            # RT_R = torch.matmul(rot2.transpose(-2, -1), rot2)
-            # print(f"{RT_R[0]=}")
-            # identity = torch.eye(3, device=rot2.device).expand_as(rot2)
-            # is_orthogonal = torch.allclose(RT_R, identity, atol=1e-2)
-            # print(f"Is the batch orthogonal? {is_orthogonal}")
-
         else:
             q = None
         if self.all_atom:
-            # z_t_pro_quats = z_t_pro.reshape(-1, z_t_pro.shape[-1])[:, :4]
-            z_t_mol = z_t_mol.reshape(-1, z_t_mol.shape[-1]) #[:, 4:]
-            z_t_pro = z_t_pro.reshape(-1, z_t_pro.shape[-1]) #[:, 4:]
+            z_t_mol = z_t_mol.reshape(-1, z_t_mol.shape[-1]) 
+            z_t_pro = z_t_pro.reshape(-1, z_t_pro.shape[-1]) 
             t = t.squeeze(-1)
         
 
@@ -241,10 +233,7 @@ class NN_Model(nn.Module):
             # add time conditioning
             if self.conditioned_on_time:
                 h_time = t[idx_joint]
-                # print(f'{h_joint.shape=}, {h_time.shape=}')
-                # print(f'{angles.shape=}')
                 if self.all_atom:
-                    # h_joint = torch.cat([angles, h_joint, h_time], dim=1)
                     h_joint = torch.cat([h_joint, h_time], dim=1)
                 else:
                     h_joint = torch.cat([h_joint, h_time], dim=1)
@@ -284,8 +273,6 @@ class NN_Model(nn.Module):
                 # calculate displacement vectors
                 displacement_vec = (x_new - x_joint) # TODO is this needed?
 
-                # displacement_vec_q = (quats - q) if self.all_atom else None
-
                 if self.all_atom:
                     rot_mol = rot[:len(molecule_idx)]
                     rot_pro = rot[len(molecule_idx):]
@@ -314,7 +301,6 @@ class NN_Model(nn.Module):
         else:
             c_s = 0
 
-        
         # remove time dim
         if self.conditioned_on_time:
             # Slice off last dimension which represented time.
@@ -324,10 +310,6 @@ class NN_Model(nn.Module):
         if self.position_encoding:
             # Slice off last dimension which represented postional encoding.
             h_new = h_new[:, :-self.pE_dim]
-
-        # if self.all_atom:
-        #     # Slice off first dimensions which represented angle information.
-        #     h_new = h_new[:, self.angle_dim:]
 
         # decode h_new
         h_new_mol = self.atom_decoder(h_new[:len(molecule_idx)])
@@ -378,7 +360,6 @@ class NN_Model(nn.Module):
 
         adj = torch.cat((torch.cat((adj_ligand, adj_cross), dim=1),
                          torch.cat((adj_cross.T, adj_pocket), dim=1)), dim=0)
-        # print(f"Number of edges: {adj.shape}")
         edges = torch.stack(torch.where(adj), dim=0)
 
         return edges

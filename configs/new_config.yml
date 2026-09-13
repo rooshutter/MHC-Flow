@@ -4,7 +4,7 @@ project: 'Structur_prediction_Experiments'
 run_name: 'pmhc_8K_xray_diff_t_1000_e_100_test'
 entity: 'roos-hutter-university-of-amsterdam' #'neuro-ai-scientist'
 
-resume: False #"./checkpoints/fold_1_t_1000_e_500/checkpoints/best-model-epoch=epoch=482.ckpt"
+resume: False 
 
 # Training
 num_epochs: 100 #1000 # TODO: early stopping?? -> prevent overfitting

@@ -558,14 +558,6 @@ class Flow_Matching_Model_all_atom_var(nn.Module):
 
         xh_pro = torch.cat((T_protein, protein_pocket['h']), dim=-1)
 
-        # T_peptide_z = Rigid.identity(
-        #     molecule['h'].shape[:-1],
-        #     molecule['h'].dtype,
-        #     device,
-        #     self.training,
-        #     fmt="quat",
-        # )
-
         # Get rotation and translation noise
         z_trans = torch.randn((*molecule['h'].shape[:-1], 3), device=device)
         z_trans = z_trans - scatter_mean(z_trans.view(-1, 3), molecule['idx'], dim=0)[molecule['idx']].view(z_trans.shape)
@@ -1607,7 +1599,7 @@ class Flow_Matching_Model_all_atom_var(nn.Module):
     
 
     @torch.no_grad()
-    def sample_structure(self, num_samples, molecule, protein_pocket, sampling_without_noise, data_dir, run_id, save_trajectory=False):
+    def sample_structure(self, num_samples, molecule, protein_pocket, sampling_without_noise, data_dir, run_id, save_trajectory=False, fold=None):
         
         device = molecule['x'].device
         num_graphs = molecule['size'].size(0)

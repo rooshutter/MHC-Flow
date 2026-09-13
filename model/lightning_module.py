@@ -15,7 +15,7 @@ from model.architecture import NN_Model
 from model.flow_matching_model import Flow_Matching_Model
 from model.flow_matching_model_all_atom import Flow_Matching_Model_all_atom
 from model.flow_matching_model_all_atom_quat import Flow_Matching_Model_all_atom as Flow_Matching_Model_all_atom_quat
-from model.flow_matching_model_all_atom_var import Flow_Matching_Model_all_atom_var
+from model.flow_matching_model_all_atom_var import Flow_Matching_Model_all_atom_var # not a correct implementation
 
 import numpy as np
 import os
@@ -121,6 +121,7 @@ class Structure_Prediction_Model(pl.LightningModule):
         
         self.dataset = dataset
         self.data_dir = data_dir
+        self.fold = getattr(dataset_params, 'fold', "1")
         self.lr = lr
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -130,108 +131,23 @@ class Structure_Prediction_Model(pl.LightningModule):
 
     # Data section
 
-    # def check_overlap(self, train_ds, val_ds, test_ds=None):
-    #     # Decode byte strings to normal strings for comparison
-    #     train_ids = set(name.decode('utf-8') if isinstance(name, bytes) else name for name in train_ds.pdb_names)
-    #     val_ids = set(name.decode('utf-8') if isinstance(name, bytes) else name for name in val_ds.pdb_names)
-        
-        
-    #     # Test might not be initialized during 'fit' stage
-    #     test_ids = set()
-    #     if test_ds is not None:
-    #         test_ids = set(name.decode('utf-8') if isinstance(name, bytes) else name for name in test_ds.pdb_names)
-
-    #     print(f"Number of training samples: {len(train_ids)}")
-    #     print(f"Number of validation samples: {len(val_ids)}")
-    #     print(f"Number of test samples: {len(test_ids)}")
-
-    #     # Calculate Intersections
-    #     train_val = train_ids.intersection(val_ids)
-    #     train_test = train_ids.intersection(test_ids)
-    #     val_test = val_ids.intersection(test_ids)
-
-    #     print(f"--- Overlap Report ---")
-    #     print(f"Train vs Val: {len(train_val)} overlaps")
-    #     print(f"Train vs Test: {len(train_test)} overlaps")
-    #     print(f"Val vs Test: {len(val_test)} overlaps")
-        
-    #     if len(train_val) + len(train_test) + len(val_test) > 0:
-    #         print(f"WARNING: Data leakage detected!")
-            
-    #     return train_val, train_test, val_test
-    
-    # def check_coordinate_overlap(self, ds_a, ds_b, name_a="Train", name_b="Test"):
-    #     print(f"Checking coordinate overlap between {name_a} and {name_b}...")
-        
-    #     # We'll use a hash of the coordinates as a fingerprint for speed
-    #     def get_coord_hashes(dataset, name):
-    #         hashes = {}
-    #         duplicates = 0
-    #         print(f"Processing {name} dataset with {len(dataset)} entries...")
-    #         for i in range(len(dataset)):
-    #             # get_entry returns the dict with 'peptide_positions'
-    #             data = dataset.get_entry(i)
-                
-    #             # Combine peptide and protein positions
-    #             # Rounding to 2 decimal places to catch near-duplicates 
-    #             # that might differ by float precision
-    #             #print all keys
-    #             coords = data['peptide_positions']
-    #             name = data['graph_name']
-    #             # print(f"Original coordinates shape for sample {i}: {coords.shape}")
-                
-    #             # Create a tuple of the rounded values to make it hashable
-    #             flat_coords = tuple(coords.numpy().flatten())
-    #             # print(f"{len(flat_coords)=}")
-    #             #check if coords in hashed:
-    #             for key in hashes.keys():
-    #                 if torch.allclose(torch.tensor(flat_coords), torch.tensor(hashes[key]), atol=1e-3):
-    #                     print(name)
-    #                     print(flat_coords)
-    #                     print(key)
-    #                     print(hashes[key])
-    #                     duplicates += 1
-                        
-
-    #             # if flat_coords in hashes.values():
-    #             #     print(name)
-    #             #     print()
-    #             #     duplicates += 1
-
-    #             hashes[name] = flat_coords
-            
-    #         print(f"{len(hashes)=}")
-    #         print(f"{len(flat_coords)=}")
-
-    #         print(f"Finished processing {name}. Found {duplicates}/{len(dataset)}={duplicates/len(dataset)*100:.2f}% duplicate coordinate sets.")
-    #         return hashes
-
-    #     hashes_a = get_coord_hashes(ds_a, name_a)
-    #     hashes_b = get_coord_hashes(ds_b, name_b)
-    #     print(f"{name_a} has {len(hashes_a)} unique coordinate sets.")
-    #     print(f"{name_b} has {len(hashes_b)} unique coordinate sets.")
-        
-    #     overlap = [h for h in hashes_a.values() if h in hashes_b.values()]
-    #     print(f"Found {len(overlap)} structures with identical 3D coordinates.")
-    #     return overlap
-
     def setup(self, stage):
 
         if self.dataset == 'pmhc_8K_xray':
 
             if not self.all_atom:
                 if stage == 'fit':
-                    self.train_dataset = PDB_Dataset(self.data_dir, 'train', all_atom=self.all_atom)
-                    self.val_dataset = PDB_Dataset(self.data_dir, 'valid', all_atom=self.all_atom)
+                    self.train_dataset = PDB_Dataset(self.data_dir, 'train', fold=str(self.fold), all_atom=self.all_atom)
+                    self.val_dataset = PDB_Dataset(self.data_dir, 'valid', fold=str(self.fold), all_atom=self.all_atom)
                 elif stage == 'test':
-                    self.test_dataset = PDB_Dataset(self.data_dir, 'test', all_atom=self.all_atom)
+                    self.test_dataset = PDB_Dataset(self.data_dir, 'test', fold=str(self.fold), all_atom=self.all_atom)
 
             if self.all_atom:
                 if stage == 'fit':
-                    self.train_dataset = PDB_Dataset_swift("/scratch-shared/roos/preprocessed/", 'train')
-                    self.val_dataset = PDB_Dataset_swift("/scratch-shared/roos/preprocessed/", 'valid')
+                    self.train_dataset = PDB_Dataset_swift("/scratch-shared/roos/preprocessed/", 'train', fold=str(self.fold))
+                    self.val_dataset = PDB_Dataset_swift("/scratch-shared/roos/preprocessed/", 'valid', fold=str(self.fold))
                 elif stage == 'test':
-                    self.test_dataset = PDB_Dataset_swift("/scratch-shared/roos/preprocessed/", 'BA')
+                    self.test_dataset = PDB_Dataset_swift("/scratch-shared/roos/preprocessed/", 'BA', fold=str(self.fold))
 
         elif self.dataset == 'pmhc_100K_xray':
 
@@ -280,6 +196,7 @@ class Structure_Prediction_Model(pl.LightningModule):
             "alt_torsion_angles_sin_cos": data["peptide_alt_torsion_angles_sin_cos"].to(self.device, FLOAT_TYPE) if "peptide_alt_torsion_angles_sin_cos" in data else None,
             "cross_residues_mask": data["peptide_cross_residues_mask"].to(self.device, INT_TYPE) if "peptide_cross_residues_mask" in data else None,
             "affinity": data["affinity"].to(self.device, FLOAT_TYPE) if "affinity" in data else None,
+            "ba_mask": data["ba_mask"].to(self.device) if "ba_mask" in data else None,
             "torsion_angles_mask": data["peptide_torsion_angles_mask"].to(self.device, FLOAT_TYPE) if "peptide_torsion_angles_mask" in data else None,
             "residue_index": data["peptide_residue_index"].to(self.device, INT_TYPE) if "peptide_residue_index" in data else None,
         }
@@ -334,28 +251,7 @@ class Structure_Prediction_Model(pl.LightningModule):
         for key, value in info.items():
             val_key = key + '_val'
             self.log(val_key, value)
-
-    # def training_step(self, data_batch):
-    #     mol_pro_batch = self.get_molecule_and_protein(data_batch)
-    #     # TODO: could add augment_noise and augment_rotation but excluded in DiffDock
-    #     loss, info = self.model(mol_pro_batch)
-    #     self.log('train_loss', loss)
-
-    #     for key, value in info.items():
-    #         self.log(key, value)
-
-    #     return loss
-
-    # def validation_step(self, data_batch, *args):
-    #     mol_pro_batch = self.get_molecule_and_protein(data_batch)
-    #     loss, info = self.model(mol_pro_batch)
-    #     self.log('val_loss', loss)
-
-    #     for key, value in info.items():
-    #         val_key = key + '_val'
-    #         self.log(val_key, value)
     
-
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, amsgrad=True, weight_decay=1e-4)
 
