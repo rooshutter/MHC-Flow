@@ -124,8 +124,8 @@ The key parameters are grouped as follows:
 
 | Parameter                                       | Description                                               |
 | ----------------------------------------------- | --------------------------------------------------------- |
-| `generative_model`                              | Type of model (e.g. `conditional_diffusion`)              |
-| `generative_model_params.timesteps`             | Number of diffusion steps                                 |
+| `generative_model`                              | Type of model (e.g. `flow_matching_all_atom`)              |
+| `generative_model_params.timesteps`             | Number of steps                                 |
 | `generative_model_params.position_encoding`     | Use positional encoding                                   |
 | `generative_model_params.position_encoding_dim` | Dimensionality of PE                                      |
 | `generative_model_params.com_handling`          | How to handle center-of-mass (`peptide`, `protein`, etc.) |
