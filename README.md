@@ -195,3 +195,5 @@ Or on a cluster:
 ```bash
 srun python -u test.py --config /absolute/path/to/flow_config.yml
 ```
+
+Note: this README is based on the README of MHC-Diff.
