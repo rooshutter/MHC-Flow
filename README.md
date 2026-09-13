@@ -2,8 +2,6 @@
 # MHC-Flow
 Structure-based Equivariant Flow Matching Models for cancer immunotherapy
 
-![Project Image](./Diffusion%20Chain.png)
-
 ## Overview
 
 Equivariant Flow Matching Model for generating peptide-MHC structures
