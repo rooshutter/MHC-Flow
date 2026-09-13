@@ -1,13 +1,13 @@
 # Logging Traing only
-logdir: "./checkpoints/fold_1_flow_e_100" 
+logdir: "./checkpoints/fold_1_flow_3" 
 project: 'Structur_prediction_Experiments'
-run_name: 'pmhc_8K_xray_fm_e_100'
+run_name: 'pmhc_8K_xray_fm_3'
 entity: 'roos-hutter-university-of-amsterdam' #'neuro-ai-scientist'
 
 resume: False 
 
 # Training
-num_epochs: 100 #1000 # TODO: early stopping?? -> prevent overfitting
+num_epochs: 1 #1000 # TODO: early stopping?? -> prevent overfitting
 device: 'cuda'
 gpus: 1
 
@@ -71,11 +71,11 @@ network_params:
   reflection_equivariant: False
 
 # Eval 
-checkpoint: './checkpoints/fold_1_flow_2/checkpoints/last.ckpt' 
+checkpoint: './checkpoints/fold_1_flow_3/checkpoints/last.ckpt' 
 num_samples: 10
 sample_batch_size: 10
 sampling_without_noise: False
-sample_savepath: './results/rmse_values/flow/fold_1_flow_2/samples_test'
+sample_savepath: './results/rmse_values/flow/fold_1_flow_3/samples_test'
 
 
 
