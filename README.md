@@ -63,10 +63,21 @@ To set up the environment, please follow the instructions carefully. **Ensure th
 
 ## 📁 Configuration
 
-All training and inference runs are controlled via a single YAML config file, e.g.:
+All training and inference runs are controlled via YAML config files:
 
+**1. MHC-Flow**
+```
+configs/flow_config.yml
+```
+
+**2. MHC-Diff**
 ```
 configs/new_config.yml
+```
+
+The main file containing the Flow Matching code is:
+```
+model/flow_matching_model_all_atom.py
 ```
 
 The key parameters are grouped as follows:
@@ -160,13 +171,13 @@ The key parameters are grouped as follows:
 To train locally:
 
 ```bash
-python train.py --config configs/new_config.yml
+python train.py --config configs/flow_config.yml
 ```
 
 To train on a cluster using SLURM (e.g. in a job script):
 
 ```bash
-srun python -u train.py --config /absolute/path/to/new_config.yml
+srun python -u train.py --config /absolute/path/to/flow_config.yml
 ```
 
 ---
@@ -176,11 +187,11 @@ srun python -u train.py --config /absolute/path/to/new_config.yml
 To generate samples from a trained model:
 
 ```bash
-python test.py --config configs/new_config.yml
+python test.py --config configs/flow_config.yml
 ```
 
 Or on a cluster:
 
 ```bash
-srun python -u test.py --config /absolute/path/to/new_config.yml
+srun python -u test.py --config /absolute/path/to/flow_config.yml
 ```
