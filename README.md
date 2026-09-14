@@ -4,7 +4,11 @@ Structure-based Equivariant Flow Matching Models for cancer immunotherapy
 
 ## Overview
 
-Equivariant Flow Matching Model for generating peptide-MHC structures
+Equivariant Flow Matching Model for generating peptide-MHC structures.
+
+Note: This project is under active development and is not yet production-ready.
+
+This is a joint project between the labs of Erik Bekkers at the University of Amsterdam and that of Li Xue at the Radboud University Medical Center.
 
 ## Dataset
 **Downloading dataset**:
