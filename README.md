@@ -8,7 +8,7 @@ Equivariant Flow Matching Model for generating peptide-MHC structures.
 
 Note: This project is under active development and is not yet production-ready.
 
-This is a joint project between the labs of Erik Bekkers at the University of Amsterdam and that of Li Xue at the Radboud University Medical Center.
+This is a joint project between the labs of Erik Bekkers at the University of Amsterdam and Li Xue at Radboud University Medical Center (Radboudumc).
 
 ## Dataset
 **Downloading dataset**:
